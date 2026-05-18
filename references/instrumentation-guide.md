@@ -1,3 +1,9 @@
+## 路径约定
+
+本 skill 中所有路径相对于 `<skill base directory>` 解析。
+
+---
+
 # 埋点体系与分层验证策略
 
 ## 文档描述
@@ -19,8 +25,24 @@
 1. **最小化侵入**：首轮最多注入 3 处埋点，追加每次 ≤2 处。每处埋点必须有明确的验证目的。
 2. **模板统一，清理友好**：所有埋点必须使用 `#region DEBUG` 包裹。占位符替换规则固定，不可修改模板结构。
 3. **环境决定模板**：客户端使用 fetch 投递到本地日志服务，服务端直接写文件。
-4. **日志格式统一**：每条日志必须包含 `type`、`location`、`message`、`data`、`timestamp`，写入同一 session 日志文件。
+4. **日志格式统一**：每条日志必须包含 `type`、`location`、`message`、`data`、`timestamp`。只写这 6 个字段，不加任何额外字段。写入同一 session 日志文件。
 5. **二分收敛，而非盲插**：埋点位置基于调用链二分法选择，不是全量散点。
+
+---
+
+## 客户端调试服务启动
+
+客户端埋点通过本地 HTTP 日志服务接收日志。注入埋点前必须确保服务已运行：
+
+1. **健康检查**：GET `http://localhost:9220/health`
+   - 返回 `200 OK` → 服务已在运行，可直接注入埋点
+   - 无响应或连接拒绝 → 服务未启动，执行步骤 2
+2. **启动服务**：`node <skill base directory>/scripts/launch-debugger.js`
+   - 在新终端窗口中启动，端口固定 9220
+   - `pwd` 通过 HTTP 请求体传入，不是启动参数。一个服务可服务多个项目
+3. 再次健康检查确认服务可达
+
+> `{{PROJECT_ROOT}}` 占位符替换为当前项目的根目录绝对路径（通过 `pwd` 命令获取），替换到请求体的 `pwd` 字段。服务端根据此字段确定日志写入目录。
 
 ---
 
@@ -45,15 +67,12 @@
   "location": "文件路径:行号",
   "message": "[进入] / [返回] / [分支] / [异常] / [状态变化] / [视觉快照]",
   "data": { /* 变量快照或样式快照 */ },
-  "stack": "调用堆栈（逻辑埋点必填，视觉埋点可选）",
   "timestamp": 1712345678901
 }
 ```
 
-- `type: "logic"` — 逻辑埋点，`data` 包含关键变量快照，`stack` 记录当前调用堆栈。
+- `type: "logic"` — 逻辑埋点，`data` 包含关键变量快照。
 - `type: "visual"` — 视觉埋点，`data` 包含 `computedStyles`、`boundingClientRect`、`viewport`、`classList` 等。
-
-> `stack` 字段用于解决两类问题：① 动态派发场景下无法通过静态代码确定调用方；② 第三方库内部调用路径不明。堆栈日志直接暴露运行时完整调用链路。
 
 ---
 
@@ -64,16 +83,16 @@
 ### JavaScript (客户端 fetch)
 
 ```javascript
-// #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}, port: {{DEBUG_PORT}}]
-fetch("http://localhost:{{DEBUG_PORT}}/debug/log?session_id={{DEBUG_SESSION_ID}}", {
+// #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
+fetch("http://localhost:9220/debug/log?session_id={{DEBUG_SESSION_ID}}", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
     type: "logic",
     location: "{{FILE}}:{{LINE}}",
     message: "{{MESSAGE}}",
+    pwd: "{{PROJECT_ROOT}}",
     data: {{DATA_SNAPSHOT}},
-    stack: new Error().stack,
     timestamp: Date.now()
   }),
   keepalive: true
@@ -93,7 +112,6 @@ import("fs").then((fs) =>
       location: "{{FILE}}:{{LINE}}",
       message: "{{MESSAGE}}",
       data: {{DATA_SNAPSHOT}},
-      stack: new Error().stack,
       timestamp: Date.now()
     }) + "\n"
   )
@@ -112,7 +130,6 @@ require("fs").appendFileSync(
     location: `${__filename}:{{LINE}}`,
     message: "{{MESSAGE}}",
     data: {{DATA_SNAPSHOT}},
-    stack: new Error().stack,
     timestamp: Date.now()
   }) + "\n"
 );
@@ -123,7 +140,7 @@ require("fs").appendFileSync(
 
 ```python
 # #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-import json, time, os, traceback
+import json, time, os
 log_dir = os.path.join("{{ABSOLUTE_PROJECT_PATH}}", ".debug", "logs")
 os.makedirs(log_dir, exist_ok=True)
 with open(os.path.join(log_dir, "{{DEBUG_SESSION_ID}}.log"), "a", encoding="utf-8") as f:
@@ -132,7 +149,6 @@ with open(os.path.join(log_dir, "{{DEBUG_SESSION_ID}}.log"), "a", encoding="utf-
         "location": f"{__file__}:{{LINE}}",
         "message": "{{MESSAGE}}",
         "data": {{DATA_SNAPSHOT}},
-        "stack": "".join(traceback.format_stack(limit=10)),
         "timestamp": time.time()
     }) + "\n")
 # #endregion DEBUG
@@ -140,7 +156,7 @@ with open(os.path.join(log_dir, "{{DEBUG_SESSION_ID}}.log"), "a", encoding="utf-
 
 ### Go
 
-> Go 模板分为两部分：`init()` 负责创建日志目录（每个包只需一份），函数体内 `{}` 代码块负责记录日志和堆栈。两部分需分别放到文件顶部和函数体内。若目标文件已存在 `init()` 函数，只取目录创建代码追加到已有 `init()` 体内。
+> Go 模板分为两部分：`init()` 负责创建日志目录（每个包只需一份），函数体内 `{}` 代码块负责记录日志。两部分需分别放到文件顶部和函数体内。若目标文件已存在 `init()` 函数，只取目录创建代码追加到已有 `init()` 体内。
 
 ```go
 // #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
@@ -149,7 +165,6 @@ import (
     "encoding/json"
     "os"
     "path/filepath"
-    "runtime"
     "time"
 )
 func init() {
@@ -158,8 +173,6 @@ func init() {
 
 // ── 函数体内代码 ──
 {
-    buf := make([]byte, 2048)
-    n := runtime.Stack(buf, false)
     f, _ := os.OpenFile(
         filepath.Join("{{ABSOLUTE_PROJECT_PATH}}", ".debug", "logs", "{{DEBUG_SESSION_ID}}.log"),
         os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644,
@@ -170,7 +183,6 @@ func init() {
         "location": "{{FILE}}:{{LINE}}",
         "message":  "{{MESSAGE}}",
         "data":     {{DATA_SNAPSHOT}},
-        "stack":    string(buf[:n]),
         "timestamp": time.Now().UnixMilli(),
     })
 }
@@ -186,11 +198,9 @@ try {
         "{{ABSOLUTE_PROJECT_PATH}}", ".debug", "logs", "{{DEBUG_SESSION_ID}}.log"
     );
     java.nio.file.Files.createDirectories(logPath.getParent());
-    String stack = java.util.Arrays.toString(Thread.currentThread().getStackTrace());
     String entry = String.format(
-        "{\"type\":\"logic\",\"location\":\"%s:%d\",\"message\":\"%s\",\"data\":%s,\"stack\":\"%s\",\"timestamp\":%d}%n",
+        "{\"type\":\"logic\",\"location\":\"%s:%d\",\"message\":\"%s\",\"data\":%s,\"timestamp\":%d}%n",
         "{{FILE}}", {{LINE}}, "{{MESSAGE}}", "{{DATA_SNAPSHOT}}",
-        stack.replace("\\", "\\\\").replace("\"", "\\\""),
         System.currentTimeMillis()
     );
     java.nio.file.Files.writeString(logPath, entry,
@@ -214,7 +224,6 @@ entry = {
   location: "#{__FILE__}:{{LINE}}",
   message: "{{MESSAGE}}",
   data: {{DATA_SNAPSHOT}},
-  stack: caller(0, 10).join("\n"),
   timestamp: (Time.now.to_f * 1000).to_i
 }
 File.open(File.join(log_dir, "{{DEBUG_SESSION_ID}}.log"), "a") { |f| f.puts(JSON.generate(entry)) }
@@ -232,7 +241,6 @@ file_put_contents($logDir . "/{{DEBUG_SESSION_ID}}.log", json_encode([
     "location" => __FILE__ . ":{{LINE}}",
     "message" => "{{MESSAGE}}",
     "data" => {{DATA_SNAPSHOT}},
-    "stack" => json_encode(array_slice(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS), 0, 10)),
     "timestamp" => round(microtime(true) * 1000)
 ]) . "\n", FILE_APPEND);
 // #endregion DEBUG
@@ -253,7 +261,6 @@ file_put_contents($logDir . "/{{DEBUG_SESSION_ID}}.log", json_encode([
             "location": format!("{}:{}", file!(), {{LINE}}),
             "message": "{{MESSAGE}}",
             "data": {{DATA_SNAPSHOT}},
-            "stack": format!("{}", std::backtrace::Backtrace::force_capture()),
             "timestamp": std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
         });
@@ -270,18 +277,19 @@ file_put_contents($logDir . "/{{DEBUG_SESSION_ID}}.log", json_encode([
 视觉快照仅在浏览器/WebView 环境有意义，服务端语言不适用。
 
 ```javascript
-// #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}, port: {{DEBUG_PORT}}]
+// #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
 const __el = document.querySelector('{{TARGET_SELECTOR}}');
 if (__el) {
   const __rect = __el.getBoundingClientRect();
   const __styles = getComputedStyle(__el);
-  fetch("http://localhost:{{DEBUG_PORT}}/debug/log?session_id={{DEBUG_SESSION_ID}}", {
+  fetch("http://localhost:9220/debug/log?session_id={{DEBUG_SESSION_ID}}", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       type: "visual",
       location: "{{FILE}}:{{LINE}}",
       message: "[视觉快照] {{MESSAGE}}",
+      pwd: "{{PROJECT_ROOT}}",
       data: {
         computedStyles: {
           display: __styles.display,
@@ -398,7 +406,7 @@ if (__el) {
 
 1. **重复注入检查**：目标位置是否已存在 `#region DEBUG` 块？若已有，不得再次注入。
 2. **作用域检查**：注入位置必须在函数体/方法体/模块顶层可执行代码块内。禁止插入到类定义、接口声明、类型定义中。
-3. **端口一致性检查**：客户端 fetch 模板中的 `{{DEBUG_PORT}}` 必须与 `debugger-server.js` 启动端口一致（默认 9220）。
+3. **端口一致性检查**：客户端 fetch 模板中的端口固定为 `9220`，与 `debugger-server.js` 保持一致。
 4. **服务端权限检查**：服务端模板中的 `{{ABSOLUTE_PROJECT_PATH}}` 必须是可写路径。
 5. **Go init 函数检查**：若目标文件已存在 `init()` 函数，将埋点代码追加到已有 `init()` 体内，不要创建重复定义。
 6. **清理注释兼容性**：注入的注释标记必须与 `cleanup-debug-blocks.js` 兼容（支持 `//` 和 `#` 开头的单行注释）。
@@ -407,9 +415,9 @@ if (__el) {
 
 ## 与其它参考文档的协同
 
-- 环境判定：`environment-detection.md` — 根据客户端/服务端判定结果选择 fetch 或文件写入模板
-- 追溯入口：`root-cause-tracing.md` — 埋点日志收集后回到追溯流程判定偏差源
-- 停止规则：连续两轮未捕获偏差或三轮埋点耗尽时，由 `direction-doubt.md` 接管方向自疑
+- 环境判定：`<skill base directory>/references/environment-detection.md` — 根据客户端/服务端判定结果选择 fetch 或文件写入模板
+- 追溯入口：`<skill base directory>/references/root-cause-tracing.md` — 埋点日志收集后回到追溯流程判定偏差源
+- 停止规则：连续两轮未捕获偏差或三轮埋点耗尽时，由 `<skill base directory>/references/direction-doubt.md` 接管方向自疑
 
 ---
 
@@ -418,7 +426,7 @@ if (__el) {
 修复完成后（Mark Fixed），调用清理脚本：
 
 ```bash
-node scripts/cleanup-debug-blocks.js --session-id <id> --files <文件列表>
+node <skill base directory>/scripts/cleanup-debug-blocks.js --session-id <id> --files <文件列表>
 ```
 
 自动清除：

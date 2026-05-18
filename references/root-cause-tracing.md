@@ -1,3 +1,9 @@
+## 路径约定
+
+本 skill 中所有路径相对于 `<skill base directory>` 解析。
+
+---
+
 # 根因追溯指南
 
 ## 文档描述
@@ -6,7 +12,7 @@
 
 逻辑缺陷和视觉缺陷共用同一套追溯框架，差异仅在于链路载体不同（函数调用链 vs DOM/CSS 继承链）。
 
-本文档承接【多维分析】输出的假设和调用链，产出根因定位结果供【源头修复】使用。当静态推理无法清晰展现数据流向时，转入 `instrumentation-guide.md` 的埋点二分法。
+本文档承接【多维分析】输出的假设和调用链，产出根因定位结果供【源头修复】使用。当静态推理无法清晰展现数据流向时，转入 `<skill base directory>/references/instrumentation-guide.md` 的埋点二分法。
 
 ---
 
@@ -77,7 +83,7 @@
 
 ### 追溯受阻
 
-以下情况静态推理无法继续时，转入埋点二分法（见 `instrumentation-guide.md`）：
+以下情况静态推理无法继续时，转入埋点二分法（见 `<skill base directory>/references/instrumentation-guide.md`）：
 
 - 调用链涉及动态派发（如策略模式、依赖注入）、静态代码无法确定实际调用方
 - 跨进程 / 跨服务边界、调用链不完整
@@ -158,6 +164,6 @@ getCart 返回 null → checkout 收到 cart=null → applyCoupon 访问 null.di
 
 ## 与其它参考文档的协同
 
-- 埋点体系：`instrumentation-guide.md` — 当调用链节点动态派发（DI 容器、策略模式）、数据流经多层变换无法肉眼追踪、或追溯超过 5 层仍不明确时，转入埋点二分法收集运行时数据，之后回到本文件继续追溯
-- 方向自疑：`direction-doubt.md` — 多轮追溯无法定位源头，或埋点证据与静态推理矛盾时触发
-- 分层重启：`restart-strategy.md` — 系统层重启后重新执行本文件
+- 埋点体系：`<skill base directory>/references/instrumentation-guide.md` — 当调用链节点动态派发（DI 容器、策略模式）、数据流经多层变换无法肉眼追踪、或追溯超过 5 层仍不明确时，转入埋点二分法收集运行时数据，之后回到本文件继续追溯
+- 方向自疑：`<skill base directory>/references/direction-doubt.md` — 多轮追溯无法定位源头，或埋点证据与静态推理矛盾时触发
+- 分层重启：`<skill base directory>/references/restart-strategy.md` — 系统层重启后重新执行本文件

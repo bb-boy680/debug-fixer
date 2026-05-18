@@ -1,3 +1,9 @@
+## 路径约定
+
+本 skill 中所有路径相对于 `<skill base directory>` 解析。
+
+---
+
 # 环境判定与缓存机制
 
 ## 文档描述
@@ -6,7 +12,7 @@
 
 准确的环境判定是选择正确埋点模板（fetch 或文件写入）的前提。判定错误将直接导致埋点日志写入失败。
 
-本文档在每次制定埋点计划时优先调用，输出环境判定结果供 `instrumentation-guide.md` 选择对应模板。
+本文档在每次制定埋点计划时优先调用，输出环境判定结果供 `<skill base directory>/references/instrumentation-guide.md` 选择对应模板。
 
 ---
 
@@ -119,6 +125,6 @@ backend:
 
 ## 与其它参考文档的协同
 
-- 埋点模板：`instrumentation-guide.md` — 环境判定结果决定模板选择
+- 埋点模板：`<skill base directory>/references/instrumentation-guide.md` — 环境判定结果决定模板选择
   - 客户端 → `fetch` 模板，需 `{{DEBUG_PORT}}` 和 `{{DEBUG_SESSION_ID}}`
   - 服务端（含双端选择） → `import("fs")` 模板，需 `{{ABSOLUTE_PROJECT_PATH}}` 和 `{{DEBUG_SESSION_ID}}`

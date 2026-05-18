@@ -1,3 +1,9 @@
+## 路径约定
+
+本 skill 中所有路径相对于 `<skill base directory>` 解析。
+
+---
+
 # 方向自疑与架构质疑
 
 ## 文档描述
@@ -6,7 +12,7 @@
 
 方向自疑不是埋点循环耗尽后的被动补救，而是流程中任何时候都可以激活的主动质疑。
 
-本文档承接【埋点分析】和【方向自疑】的触发条件，输出质疑结果供 `restart-strategy.md` 执行分层重启。
+本文档承接【埋点分析】和【方向自疑】的触发条件，输出质疑结果供 `<skill base directory>/references/restart-strategy.md` 执行分层重启。
 
 ---
 
@@ -102,7 +108,7 @@
 2. 按三层七维度逐项审视，仅输出有实际质疑的维度，每个附带具体追问
 3. 列出当前所有活跃的正确性假设（以系统行为描述，不用代码术语），通过多选 question 让用户确认哪些假设已不成立
 4. 输出质疑关联分析：指出维度间可能的因果关系
-5. 输出重启清单，引用 `restart-strategy.md` 执行分层重启
+5. 输出重启清单，引用 `<skill base directory>/references/restart-strategy.md` 执行分层重启
 6. 记录负向约束至当前 session 上下文
 7. 调用 `AskUserQuestion: Proceed（确认质疑，进入分层重启）/ Mark Fixed（确认无需修复）`
 
@@ -152,7 +158,7 @@
 - 废弃：（列出被推翻的假设）
 - 重新建立：（需要重建的假设方向）
 - 建议用户：（需要用户配合的信息）
-- 重启策略：见 restart-strategy.md
+- 重启策略：见 `<skill base directory>/references/restart-strategy.md`
 
 → AskUserQuestion: Proceed（进入分层重启）/ Mark Fixed（确认无需修复）
 ```
@@ -161,6 +167,6 @@
 
 ## 与其它参考文档的协同
 
-- 触发来源：`root-cause-tracing.md` 的偏差分析、`instrumentation-guide.md` 的停止规则
-- 重启路径：`restart-strategy.md`
+- 触发来源：`<skill base directory>/references/root-cause-tracing.md` 的偏差分析、`<skill base directory>/references/instrumentation-guide.md` 的停止规则
+- 重启路径：`<skill base directory>/references/restart-strategy.md`
 - 交互收尾：遵循 README【用户交互】章节

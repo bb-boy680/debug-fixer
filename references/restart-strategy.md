@@ -1,3 +1,9 @@
+## 路径约定
+
+本 skill 中所有路径相对于 `<skill base directory>` 解析。
+
+---
+
 # 质疑后重启策略
 
 ## 文档描述
@@ -6,7 +12,7 @@
 
 它是"质疑"与"下一轮行动"之间的桥梁，确保不会在方向自疑后盲目全盘推倒重来，也不在需要重建时抱着已证伪的假设不放。
 
-本文档承接 `direction-doubt.md` 的【质疑后重启清单】，输出分层重启动作供 README 流程中的【方向重启】执行。
+本文档承接 `<skill base directory>/references/direction-doubt.md` 的【质疑后重启清单】，输出分层重启动作供 README 流程中的【方向重启】执行。
 
 ---
 
@@ -98,6 +104,6 @@
 
 ## 与其它参考文档的协同
 
-- 方向自疑：由 `direction-doubt.md` 在输出重启清单时引用
-- 埋点体系：重启后仍遵循 `instrumentation-guide.md`
-- 根因追溯：系统层重启后重新执行 `root-cause-tracing.md`
+- 方向自疑：由 `<skill base directory>/references/direction-doubt.md` 在输出重启清单时引用
+- 埋点体系：重启后仍遵循 `<skill base directory>/references/instrumentation-guide.md`
+- 根因追溯：系统层重启后重新执行 `<skill base directory>/references/root-cause-tracing.md`
