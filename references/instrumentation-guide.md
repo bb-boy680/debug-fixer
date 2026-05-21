@@ -1,34 +1,34 @@
-## 路径约定
-
-本 skill 中所有路径相对于 `<skill base directory>` 解析。
-
----
-
 # 埋点体系与分层验证策略
 
 ## 文档描述
 
 本文档定义 debug-fixer 的完整埋点体系：在哪埋、埋什么、怎么埋、怎么用结果反推假设。
 
-承接【多维分析】输出的假设和调用链，为每个待验证假设提供精确的日志注入方案，承接【埋点分析】的决策流程，并在 Mark Fixed 后通过清理工具一键移除所有注入代码。
-
 核心目标：
-- 提供标准化、跨语言的埋点模板，保证日志格式统一。
+- 提供标准化埋点模板，保证日志格式统一。
 - 定义埋点定位策略，用最少埋点最快收敛到根因。
 - 定义日志内容清单，确保每条日志信息足够验证或证伪假设。
 - 制定分层验证与停止规则，避免无限埋点。
+- 优先使用现有运行时证据；只有证据仍不足时才注入新埋点。
 
----
+本文档在第三步制定埋点计划时调用。环境判定完成后，根据目标代码的语言选择对应模板。
 
 ## 核心原则
 
 1. **最小化侵入**：首轮最多注入 3 处埋点，追加每次 ≤2 处。每处埋点必须有明确的验证目的。
 2. **模板统一，清理友好**：所有埋点必须使用 `#region DEBUG` 包裹。占位符替换规则固定，不可修改模板结构。
 3. **环境决定模板**：客户端使用 fetch 投递到本地日志服务，服务端直接写文件。
-4. **日志格式统一**：每条日志必须包含 `type`、`location`、`message`、`data`、`timestamp`。只写这 6 个字段，不加任何额外字段。写入同一 session 日志文件。
+4. **日志格式统一**：每条日志必须包含 `type`、`location`、`message`、`data`、`timestamp`。写入同一 session 日志文件。
 5. **二分收敛，而非盲插**：埋点位置基于调用链二分法选择，不是全量散点。
 
----
+## 禁止行为
+
+- **禁止使用语言自带的日志方式**：`console.log`、`print`、`fmt.Println`、`echo`、`puts` 等一律不允许。必须使用本文档定义的标准模板。
+- **禁止在埋点代码中修改业务变量或程序状态**：埋点只能读取和发送数据。
+- **禁止阻塞主流程**：fetch 必须带 `keepalive: true`，文件写入必须用追加模式且不阻塞。
+- **禁止让埋点自己抛错**：所有模板都要静默失败，不能因为序列化、网络、文件写入问题影响主流程。
+- **禁止不包裹 `#region DEBUG`**：无包裹的埋点无法被清理工具识别，会在清理时遗留。
+- **禁止在不可执行位置注入**：类定义、接口声明、类型定义中不可注入埋点。
 
 ## 客户端调试服务启动
 
@@ -42,31 +42,18 @@
    - `pwd` 通过 HTTP 请求体传入，不是启动参数。一个服务可服务多个项目
 3. 再次健康检查确认服务可达
 
-> `{{PROJECT_ROOT}}` 占位符替换为当前项目的根目录绝对路径（通过 `pwd` 命令获取），替换到请求体的 `pwd` 字段。服务端根据此字段确定日志写入目录。
-
----
-
-## 禁止行为
-
-- **禁止使用语言自带的日志方式**：`console.log`、`print`、`fmt.Println`、`echo`、`puts` 等一律不允许。必须使用本文档定义的标准模板。
-- **禁止在埋点代码中修改业务变量或程序状态**：埋点只能读取和发送数据。
-- **禁止阻塞主流程**：fetch 必须带 `keepalive: true`，文件写入必须用追加模式且不阻塞。
-- **禁止不包裹 `#region DEBUG`**：无包裹的埋点无法被清理工具识别，会在清理时遗留。
-- **禁止在不可执行位置注入**：类定义、接口声明、类型定义中不可注入埋点。
-- **禁止在非函数作用域使用函数调用代码**：如静态初始化块或模块顶层注入时，确保语法合法。
-
----
+> `{{PROJECT_ROOT}}` 占位符替换为当前项目的根目录绝对路径（通过 `pwd` 命令获取），替换到请求体的 `pwd` 字段。
 
 ## 日志格式
 
-所有埋点输出单行 JSON，写入 `.debug/logs/<session_id>.log`：
+所有埋点输出单行 JSON，写入 `.debug/logs/<session_id>.log`。单次埋点尽量只记录定位所需的最小字段，避免大对象和循环引用。
 
 ```json
 {
   "type": "logic | visual",
   "location": "文件路径:行号",
   "message": "[进入] / [返回] / [分支] / [异常] / [状态变化] / [视觉快照]",
-  "data": { /* 变量快照或样式快照 */ },
+  "data": { },
   "timestamp": 1712345678901
 }
 ```
@@ -74,29 +61,63 @@
 - `type: "logic"` — 逻辑埋点，`data` 包含关键变量快照。
 - `type: "visual"` — 视觉埋点，`data` 包含 `computedStyles`、`boundingClientRect`、`viewport`、`classList` 等。
 
----
+## 模板选择
 
-## 多语言埋点模板
+根据环境判定结果和项目语言选择模板。**常用模板直接在下方，其他语言模板按需读取对应文件。**
+
+| 语言 | 环境 | 模板位置 |
+|------|------|----------|
+| JavaScript / TypeScript | 客户端（浏览器） | 下方 — JS 客户端 fetch |
+| JavaScript / TypeScript | 服务端（Node ESM） | 下方 — Node.js ES Modules |
+| JavaScript / TypeScript | 服务端（Node CJS） | 下方 — Node.js CommonJS |
+| Python | 服务端 | 下方 — Python |
+| Go | 服务端 | `<skill base directory>/references/templates/go.md>` |
+| Java | 服务端 | `<skill base directory>/references/templates/java.md>` |
+| Ruby | 服务端 | `<skill base directory>/references/templates/ruby.md>` |
+| PHP | 服务端 | `<skill base directory>/references/templates/php.md>` |
+| Rust | 服务端 | `<skill base directory>/references/templates/rust.md>` |
+| 视觉快照 | 客户端（浏览器） | 下方 — 视觉快照模板 |
 
 > 清理兼容性说明：`cleanup-debug-blocks.js` 默认处理以 `//` 或 `#` 开头的单行注释标记 `#region DEBUG` / `#endregion DEBUG`。
+
+## 常用模板
 
 ### JavaScript (客户端 fetch)
 
 ```javascript
 // #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-fetch("http://localhost:9220/debug/log?session_id={{DEBUG_SESSION_ID}}", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    type: "logic",
-    location: "{{FILE}}:{{LINE}}",
-    message: "{{MESSAGE}}",
-    pwd: "{{PROJECT_ROOT}}",
-    data: {{DATA_SNAPSHOT}},
-    timestamp: Date.now()
-  }),
-  keepalive: true
-});
+void (() => {
+  try {
+    const __safeStringify = (value) => {
+      const seen = new WeakSet();
+      return JSON.stringify(value, (_, v) => {
+        if (typeof v === "bigint") return v.toString();
+        if (typeof v === "function") return "[Function]";
+        if (typeof v === "object" && v !== null) {
+          if (seen.has(v)) return "[Circular]";
+          seen.add(v);
+        }
+        return v;
+      });
+    };
+
+    const __payload = {
+      type: "logic",
+      location: "{{FILE}}:{{LINE}}",
+      message: "{{MESSAGE}}",
+      pwd: "{{PROJECT_ROOT}}",
+      data: {{DATA_SNAPSHOT}},
+      timestamp: Date.now()
+    };
+
+    fetch("http://localhost:9220/debug/log?session_id={{DEBUG_SESSION_ID}}", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: __safeStringify(__payload),
+      keepalive: true
+    }).catch(() => {});
+  } catch {}
+})();
 // #endregion DEBUG
 ```
 
@@ -104,18 +125,21 @@ fetch("http://localhost:9220/debug/log?session_id={{DEBUG_SESSION_ID}}", {
 
 ```javascript
 // #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-import("fs").then((fs) =>
-  fs.appendFileSync(
-    "{{ABSOLUTE_PROJECT_PATH}}/.debug/logs/{{DEBUG_SESSION_ID}}.log",
-    JSON.stringify({
-      type: "logic",
-      location: "{{FILE}}:{{LINE}}",
-      message: "{{MESSAGE}}",
-      data: {{DATA_SNAPSHOT}},
-      timestamp: Date.now()
-    }) + "\n"
-  )
-);
+void (async () => {
+  try {
+    const fs = await import("node:fs");
+    fs.appendFileSync(
+      "{{ABSOLUTE_PROJECT_PATH}}/.debug/logs/{{DEBUG_SESSION_ID}}.log",
+      JSON.stringify({
+        type: "logic",
+        location: "{{FILE}}:{{LINE}}",
+        message: "{{MESSAGE}}",
+        data: {{DATA_SNAPSHOT}},
+        timestamp: Date.now()
+      }) + "\n"
+    );
+  } catch {}
+})();
 // #endregion DEBUG
 ```
 
@@ -123,16 +147,18 @@ import("fs").then((fs) =>
 
 ```javascript
 // #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-require("fs").appendFileSync(
-  "{{ABSOLUTE_PROJECT_PATH}}/.debug/logs/{{DEBUG_SESSION_ID}}.log",
-  JSON.stringify({
-    type: "logic",
-    location: `${__filename}:{{LINE}}`,
-    message: "{{MESSAGE}}",
-    data: {{DATA_SNAPSHOT}},
-    timestamp: Date.now()
-  }) + "\n"
-);
+try {
+  require("fs").appendFileSync(
+    "{{ABSOLUTE_PROJECT_PATH}}/.debug/logs/{{DEBUG_SESSION_ID}}.log",
+    JSON.stringify({
+      type: "logic",
+      location: `${__filename}:{{LINE}}`,
+      message: "{{MESSAGE}}",
+      data: {{DATA_SNAPSHOT}},
+      timestamp: Date.now()
+    }) + "\n"
+  );
+} catch {}
 // #endregion DEBUG
 ```
 
@@ -140,186 +166,71 @@ require("fs").appendFileSync(
 
 ```python
 # #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-import json, time, os
-log_dir = os.path.join("{{ABSOLUTE_PROJECT_PATH}}", ".debug", "logs")
-os.makedirs(log_dir, exist_ok=True)
-with open(os.path.join(log_dir, "{{DEBUG_SESSION_ID}}.log"), "a", encoding="utf-8") as f:
-    f.write(json.dumps({
-        "type": "logic",
-        "location": f"{__file__}:{{LINE}}",
-        "message": "{{MESSAGE}}",
-        "data": {{DATA_SNAPSHOT}},
-        "timestamp": time.time()
-    }) + "\n")
-# #endregion DEBUG
-```
-
-### Go
-
-> Go 模板分为两部分：`init()` 负责创建日志目录（每个包只需一份），函数体内 `{}` 代码块负责记录日志。两部分需分别放到文件顶部和函数体内。若目标文件已存在 `init()` 函数，只取目录创建代码追加到已有 `init()` 体内。
-
-```go
-// #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-// ── 包级代码（文件顶部 import 区） ──
-import (
-    "encoding/json"
-    "os"
-    "path/filepath"
-    "time"
-)
-func init() {
-    os.MkdirAll(filepath.Join("{{ABSOLUTE_PROJECT_PATH}}", ".debug", "logs"), 0755)
-}
-
-// ── 函数体内代码 ──
-{
-    f, _ := os.OpenFile(
-        filepath.Join("{{ABSOLUTE_PROJECT_PATH}}", ".debug", "logs", "{{DEBUG_SESSION_ID}}.log"),
-        os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644,
-    )
-    defer f.Close()
-    json.NewEncoder(f).Encode(map[string]interface{}{
-        "type":     "logic",
-        "location": "{{FILE}}:{{LINE}}",
-        "message":  "{{MESSAGE}}",
-        "data":     {{DATA_SNAPSHOT}},
-        "timestamp": time.Now().UnixMilli(),
-    })
-}
-// #endregion DEBUG
-```
-
-### Java
-
-```java
-// #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-try {
-    java.nio.file.Path logPath = java.nio.file.Paths.get(
-        "{{ABSOLUTE_PROJECT_PATH}}", ".debug", "logs", "{{DEBUG_SESSION_ID}}.log"
-    );
-    java.nio.file.Files.createDirectories(logPath.getParent());
-    String entry = String.format(
-        "{\"type\":\"logic\",\"location\":\"%s:%d\",\"message\":\"%s\",\"data\":%s,\"timestamp\":%d}%n",
-        "{{FILE}}", {{LINE}}, "{{MESSAGE}}", "{{DATA_SNAPSHOT}}",
-        System.currentTimeMillis()
-    );
-    java.nio.file.Files.writeString(logPath, entry,
-        java.nio.file.StandardOpenOption.CREATE,
-        java.nio.file.StandardOpenOption.APPEND
-    );
-} catch (Exception e) {}
-// #endregion DEBUG
-```
-
-### Ruby
-
-```ruby
-# #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-require 'json'
-require 'fileutils'
-log_dir = File.join("{{ABSOLUTE_PROJECT_PATH}}", ".debug", "logs")
-FileUtils.mkdir_p(log_dir)
-entry = {
-  type: "logic",
-  location: "#{__FILE__}:{{LINE}}",
-  message: "{{MESSAGE}}",
-  data: {{DATA_SNAPSHOT}},
-  timestamp: (Time.now.to_f * 1000).to_i
-}
-File.open(File.join(log_dir, "{{DEBUG_SESSION_ID}}.log"), "a") { |f| f.puts(JSON.generate(entry)) }
-# #endregion DEBUG
-```
-
-### PHP
-
-```php
-// #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-$logDir = "{{ABSOLUTE_PROJECT_PATH}}/.debug/logs";
-if (!is_dir($logDir)) { mkdir($logDir, 0755, true); }
-file_put_contents($logDir . "/{{DEBUG_SESSION_ID}}.log", json_encode([
-    "type" => "logic",
-    "location" => __FILE__ . ":{{LINE}}",
-    "message" => "{{MESSAGE}}",
-    "data" => {{DATA_SNAPSHOT}},
-    "timestamp" => round(microtime(true) * 1000)
-]) . "\n", FILE_APPEND);
-// #endregion DEBUG
-```
-
-### Rust
-
-```rust
-// #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-{
-    use std::io::Write;
-    let log_dir = std::path::Path::new("{{ABSOLUTE_PROJECT_PATH}}").join(".debug/logs");
-    std::fs::create_dir_all(&log_dir).ok();
-    let log_path = log_dir.join("{{DEBUG_SESSION_ID}}.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
-        let entry = serde_json::json!({
+try:
+    import json, time, os
+    log_dir = os.path.join("{{ABSOLUTE_PROJECT_PATH}}", ".debug", "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    with open(os.path.join(log_dir, "{{DEBUG_SESSION_ID}}.log"), "a", encoding="utf-8") as f:
+        f.write(json.dumps({
             "type": "logic",
-            "location": format!("{}:{}", file!(), {{LINE}}),
+            "location": f"{__file__}:{{LINE}}",
             "message": "{{MESSAGE}}",
             "data": {{DATA_SNAPSHOT}},
-            "timestamp": std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
-        });
-        let _ = writeln!(f, "{}", entry);
-    }
-}
-// #endregion DEBUG
+            "timestamp": time.time()
+        }, default=str) + "\n")
+except Exception:
+    pass
+# #endregion DEBUG
 ```
 
----
-
-### 视觉快照模板 (仅 JavaScript)
-
-视觉快照仅在浏览器/WebView 环境有意义，服务端语言不适用。
+### 视觉快照 (仅 JavaScript 客户端)
 
 ```javascript
 // #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-const __el = document.querySelector('{{TARGET_SELECTOR}}');
-if (__el) {
-  const __rect = __el.getBoundingClientRect();
-  const __styles = getComputedStyle(__el);
-  fetch("http://localhost:9220/debug/log?session_id={{DEBUG_SESSION_ID}}", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "visual",
-      location: "{{FILE}}:{{LINE}}",
-      message: "[视觉快照] {{MESSAGE}}",
-      pwd: "{{PROJECT_ROOT}}",
-      data: {
-        computedStyles: {
-          display: __styles.display,
-          visibility: __styles.visibility,
-          position: __styles.position,
-          zIndex: __styles.zIndex,
-          pointerEvents: __styles.pointerEvents,
-          opacity: __styles.opacity,
-          transform: __styles.transform,
-          overflow: __styles.overflow
+void (() => {
+  try {
+    const __el = document.querySelector('{{TARGET_SELECTOR}}');
+    if (!__el) return;
+
+    const __rect = __el.getBoundingClientRect();
+    const __styles = getComputedStyle(__el);
+    fetch("http://localhost:9220/debug/log?session_id={{DEBUG_SESSION_ID}}", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "visual",
+        location: "{{FILE}}:{{LINE}}",
+        message: "[视觉快照] {{MESSAGE}}",
+        pwd: "{{PROJECT_ROOT}}",
+        data: {
+          computedStyles: {
+            display: __styles.display,
+            visibility: __styles.visibility,
+            position: __styles.position,
+            zIndex: __styles.zIndex,
+            pointerEvents: __styles.pointerEvents,
+            opacity: __styles.opacity,
+            transform: __styles.transform,
+            overflow: __styles.overflow
+          },
+          boundingClientRect: {
+            x: __rect.x, y: __rect.y,
+            width: __rect.width, height: __rect.height
+          },
+          classList: Array.from(__el.classList),
+          viewport: {
+            width: window.innerWidth,
+            height: window.innerHeight
+          }
         },
-        boundingClientRect: {
-          x: __rect.x, y: __rect.y,
-          width: __rect.width, height: __rect.height
-        },
-        classList: Array.from(__el.classList),
-        viewport: {
-          width: window.innerWidth,
-          height: window.innerHeight
-        }
-      },
-      timestamp: Date.now()
-    }),
-    keepalive: true
-  });
-}
+        timestamp: Date.now()
+      }),
+      keepalive: true
+    }).catch(() => {});
+  } catch {}
+})();
 // #endregion DEBUG
 ```
-
----
 
 ## 埋点策略
 
@@ -338,7 +249,7 @@ if (__el) {
 
 ### 日志内容清单
 
-每处埋点必须回答四个问题，缺一不可采样：
+每轮埋点计划必须整体覆盖四个问题，缺一不可：
 
 | 问题 | 对应字段 | 示例 |
 |------|----------|------|
@@ -346,8 +257,6 @@ if (__el) {
 | 函数返回了什么？ | 出值 | `{ return: { ok: true } }` |
 | 走了哪个分支？ | 分支条件 | `{ branch: "isAdmin", value: false }` |
 | 对外产生了什么影响？ | 副作用状态 | `{ storeState: {...}, domChanged: true }` |
-
-`data` 字段中应包含当前验证假设所需的全部关键变量，不依赖单次日志推理。
 
 ### 分层验证与停止规则
 
@@ -357,15 +266,15 @@ if (__el) {
 
 #### 调用链核验
 
-首轮埋点日志收集后，在分析数据偏差之前，必须先用堆栈字段核验静态构建的调用链是否正确：
+首轮埋点日志收集后，在分析数据偏差之前，必须核验静态构建的调用链是否正确：
 
-1. 提取每条日志的 `stack` 字段，还原实际的运行时调用路径。
-2. 将运行时调用路径与静态分析构建的调用链逐层对比：
+1. 按时间戳排序日志，用 `location` 字段还原实际执行顺序。
+2. 与静态调用链逐层对比：
    - **一致** → 调用链正确，进入偏差分析。
-   - **存在差异**（如多出未预期的中间层、缺少某跳） → **调用链理解有误**，按实际堆栈修正调用链，重新制定埋点计划。
-3. 调用链修正后不必回到二分起点，在修正后的链上按原有进度继续。
+   - **存在差异**（多出中间层、缺少某跳） → 按实际日志修正调用链，重新制定埋点计划。
+3. 调用链修正后按原有进度继续，不回到二分起点。
 
-> 这一步投入极小（无需额外代码，仅检查已有日志），但能避免在错误调用链上浪费全部埋点轮次。
+> 这一步无需额外代码，仅检查已有日志的 `location` 和 `data`，但能避免在错误调用链上浪费全部埋点轮次。
 
 #### 偏差分析后决策
 
@@ -373,7 +282,6 @@ if (__el) {
    - **本地产生**（入参符合假设但输出/副作用错误）→ 当前节点即源头，停止追加。
    - **上游传入**（入参已偏离假设）→ 向上二分继续追踪。
 2. **未捕获到偏差**
-   - 偏差在未埋点节点，或被复现条件差异掩盖。
    - 在未覆盖的调用链段取中点继续埋点，同时确认复现步骤一致。
    - 连续两轮未捕获偏差，触发**方向自疑**。
 3. **达到最大追加轮次**
@@ -394,11 +302,9 @@ if (__el) {
 
 - `fetch` 必须使用 `keepalive: true`，确保日志不因页面关闭丢失，同时不阻塞主线程。
 - 文件写入必须使用追加模式，不加锁。
-- **如果 BUG 涉及竞态/异步时序**：埋点后 BUG 消失是重要信号——说明埋点引入的微小时序变化改变了执行顺序。此时不应继续埋点，应转为静态代码推理，重点检查 `Promise`、`setTimeout`、`await` 的时序依赖。
+- **如果 BUG 涉及竞态/异步时序**：埋点后 BUG 消失是重要信号——埋点引入的微小时序变化改变了执行顺序。此时不应继续埋点，应转为静态代码推理，重点检查 `Promise`、`setTimeout`、`await` 的时序依赖。
 - 视觉快照变量使用双下划线前缀（`__el`、`__rect`）避免污染作用域。
 - 所有异常必须静默处理，日志写入失败不得抛出错误。
-
----
 
 ## 注入前安全检查
 
@@ -411,26 +317,12 @@ if (__el) {
 5. **Go init 函数检查**：若目标文件已存在 `init()` 函数，将埋点代码追加到已有 `init()` 体内，不要创建重复定义。
 6. **清理注释兼容性**：注入的注释标记必须与 `cleanup-debug-blocks.js` 兼容（支持 `//` 和 `#` 开头的单行注释）。
 
----
-
-## 与其它参考文档的协同
-
-- 环境判定：`<skill base directory>/references/environment-detection.md` — 根据客户端/服务端判定结果选择 fetch 或文件写入模板
-- 追溯入口：`<skill base directory>/references/root-cause-tracing.md` — 埋点日志收集后回到追溯流程判定偏差源
-- 停止规则：连续两轮未捕获偏差或三轮埋点耗尽时，由 `<skill base directory>/references/direction-doubt.md` 接管方向自疑
-
----
-
 ## 与清理工具的联动
 
-修复完成后（Mark Fixed），调用清理脚本：
+确认回合通过后，在同一个回合里决定是否调用清理脚本：
 
 ```bash
 node <skill base directory>/scripts/cleanup-debug-blocks.js --session-id <id> --files <文件列表>
 ```
 
-自动清除：
-- 所有源文件中的 `// #region DEBUG ... // #endregion DEBUG` 块。
-- 对应的 `.debug/logs/<session_id>.log` 文件。
-
-**不要手动删除后再调用脚本，直接使用脚本完成全部清理。**
+自动清除所有源文件中的 `#region DEBUG` 块和对应的日志文件。**直接使用脚本完成全部清理，不手动删除。**清理动作以用户确认过的结果为前提，不要在用户还没回复前自动执行。

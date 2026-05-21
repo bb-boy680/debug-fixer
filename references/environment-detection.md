@@ -1,130 +1,63 @@
-## 路径约定
-
-本 skill 中所有路径相对于 `<skill base directory>` 解析。
-
----
-
-# 环境判定与缓存机制
+# 环境判定
 
 ## 文档描述
 
-本文档定义 debug-fixer 如何识别目标代码的运行环境（客户端/服务端），并利用 `.debug/config.yaml` 缓存判定结果，避免重复分析。
+本文档帮助你为埋点代码选择正确的日志写入模板——fetch（浏览器）或文件写入（Node）。
 
-准确的环境判定是选择正确埋点模板（fetch 或文件写入）的前提。判定错误将直接导致埋点日志写入失败。
+判定错误将直接导致埋点日志写入失败，后续的日志分析和偏差定位全部建立在日志数据之上。日志没写进去，你会在第三步浪费至少两轮对话才发现问题不在代码而在埋点本身。这是完全可以避免的。
 
-本文档在每次制定埋点计划时优先调用，输出环境判定结果供 `<skill base directory>/references/instrumentation-guide.md` 选择对应模板。
+本文档在第三步制定埋点计划时调用。
 
----
+## 为什么需要专门判定环境？
 
-## 核心原则
+你已经读过代码，大概率知道这段代码跑在哪。但有两个陷阱会让有经验的开发者（和 AI）判断失误：
 
-1. **缓存优先**：判定环境前必须先读取 `.debug/config.yaml`。不存在则动态检测，检测完成后创建缓存。
-2. **证据驱动**：动态检测基于代码中的客观特征（API 引用、模块导入、项目结构），禁止凭文件名后缀猜测。
-3. **双端优先服务端**：代码同时具备客户端和服务端特征时，优先选服务端埋点（`import("fs")` 写文件，无需启动 HTTP 服务）。
-4. **缓存追加不覆盖**：新发现的规则追加到对应分组末尾，不删除已有规则，不重复添加。
-5. **无法判定时提问**：特征矛盾或不足时，用具体问题向用户确认，将确认结果写入缓存。
-6. **规则覆盖目录而非单文件**：对于 `src/services/order.js`，缓存 `src/services/**`，后续同目录文件直接命中。
+1. **后缀名骗人**：`.tsx` 不等于浏览器。Ink 用 React JSX 写终端 UI，Next.js Server Component 也是 `.tsx`，但它们跑在 Node。
+2. **同构代码的双重身份**：同一个文件可能同时被浏览器和 Node 执行（Next.js SSR、Electron），选错模板会让一半的日志丢失。
 
----
+所以这一步的目的不是重新分析——是**确认你已经知道的结论没有被后缀名误导**。
 
-## 禁止行为
+## 判定方法
 
-- **禁止跳过缓存直接动态检测**：每次都读代码判定会浪费 token 且结果不稳定。
-- **禁止凭文件名后缀判定环境**：`.js`/`.ts` 文件既可能是 Node.js 也可能是浏览器代码。
-- **禁止覆盖已有缓存规则**：追加模式，不删除、不复写。
-- **禁止添加重复规则**：写入前必须检查目标分组中是否已存在相同规则。
-- **禁止对单文件缓存**：缓存应覆盖目录或模块，对单文件的缓存几乎不会被复用。
+你不是从零开始。第一步重建调用链时，你已经掌握了三个事实：
 
----
+- **项目是什么**：package.json 的 dependencies 告诉你的（有没有 `ink`、`next`、`electron`、`express`）
+- **文件做什么**：你在 1.3 画调用链时读过的代码内容
+- **它跑在哪**：你大概率已经有一个明确的答案
 
-## 缓存文件格式
+基于这些已知信息，做出判定：
 
-`.debug/config.yaml`（项目根目录）：
+- **确定是浏览器** → 用 fetch 模板
+- **确定是 Node**（包括 TUI、Electron main、Next.js API Route / Server Component）→ 用文件写入模板
+- **无法确定 → 默认选服务端**（文件写入模板）
 
-```yaml
-# DebugFixer 环境缓存
-frontend:
-  - "web/**/*"
-  - "**/client/**"
-  - "src/components/**"
-backend:
-  - "cli/**/*"
-  - "packages/**/*"
-  - "**/server/**"
-  - "src/api/**"
+默认选服务端的原因：文件写入不依赖 HTTP 服务的正确启动，比 fetch 少一个故障点。如果默认选错了（实际是浏览器代码），最坏情况是少了一条日志——而你从调用链核验中会立刻发现该处日志缺失，修正成本是一轮。但为此增加一轮用户交互，用户要停下来回答"这段代码跑在哪"——这种打断比日志缺失的代价更大。
+
+## 容易误判的场景速查
+
+以下场景中文件后缀名和框架名具有欺骗性。使用时对照你已经知道的项目上下文，不要凭文件名或后缀单独判断：
+
+| 场景 | 为什么容易误判 | 实际环境 | 关键区分方式 |
+|------|---------------|----------|-------------|
+| Ink / React TUI | `.tsx` + JSX，长得和浏览器 React 一模一样 | Node | package.json 有 `ink` 依赖 + `bin` 字段 |
+| Next.js Server Component | `.tsx` + JSX，但没有 `'use client'` 指令 | Node | Next.js App Router 默认服务端组件 |
+| Next.js Client Component | `.tsx` + JSX，文件头有 `'use client'` | 浏览器 | `'use client'` 指令明确声明 |
+| Next.js API Route | `pages/api/` 或 `app/api/` 下的文件 | Node | 目录路径本身就是约定 |
+| Electron 主进程 | `.js`/`.ts`，没有 DOM API | Node | `BrowserWindow`、`ipcMain`、`app` 模块 |
+| Electron 渲染进程 | `.js`/`.ts`，和普通网页写法一样 | 浏览器 | `ipcRenderer` + DOM API，或 `src/renderer/` 目录 |
+| VS Code Extension | `.ts` 文件，没有浏览器 API | Node | `import * as vscode from 'vscode'` |
+| React Native | `.tsx` + JSX，但 import 来自 `react-native` | 客户端 | `react-native` 包 + `StyleSheet` |
+
+**同构代码（同时包含客户端和服务端逻辑）**：如果一个文件同时出现 `useEffect` 和 `getServerSideProps`，或同时 import 了 `fs` 和 `useState`——选择服务端模板。文件写入不依赖浏览器端口，比 fetch 更可靠。
+
+## 结果输出
+
+判定完成后，在埋点计划中明确写出：
+
+```
+环境：[客户端 / 服务端]
+依据：[为什么这么判定，一句话]
+模板：[fetch / 文件写入]
 ```
 
-- `frontend`：客户端 glob 规则
-- `backend`：服务端 glob 规则
-- 同时命中两组 → 双端代码，按核心原则 3 选服务端
-- 均未命中 → 进入动态检测
-
----
-
-## 操作流程
-
-1. 读取 `.debug/config.yaml` → 存在则步骤 2，不存在则步骤 3
-2. 将目标文件路径与规则逐一匹配 → 命中即结束，未命中则步骤 3
-3. 动态检测：打开目标文件，对照判定特征表扫描，结合项目结构综合判定
-4. 将新规则写入 `.debug/config.yaml`，确保目录级覆盖、无重复
-5. 特征不足时向用户提问确认，确认结果同样缓存
-
----
-
-## 文件创建路径
-
-首次创建 `.debug/config.yaml` 时：
-
-1. 写入 `# DebugFixer 环境缓存`
-2. 写入 `frontend:` 和 `backend:`，初始为空数组 `[]`
-3. 写入动态检测确定的规则：
-
-```yaml
-# DebugFixer 环境缓存
-frontend:
-  - "web/**/*"
-backend:
-  - "src/services/**"
-```
-
----
-
-## 判定特征表
-
-### 客户端特征（满足任一即可）
-
-- 浏览器专属 API：`window`、`document`、`localStorage`、`sessionStorage`、`navigator`、`HTMLElement`
-- DOM 事件绑定：`addEventListener`、`onclick` 等
-- 前端框架组件：JSX、`<template>`、`.vue` template 部分
-- CSS Module、`styled-components`、样式对象
-- Web API：`Canvas`、`WebGL`、`IntersectionObserver`
-- `fetch`/`XMLHttpRequest` 且无 Node.js 服务端特征
-
-### 服务端特征（满足任一即可）
-
-- Node.js 核心模块：`fs`、`path`、`http`、`https`、`crypto`、`stream`
-- 服务端框架：Express/Koa/Fastify 路由或中间件定义
-- 数据库驱动：`mongoose`、`sequelize`、`mysql2`、`pg` 等
-- 文件流操作：`fs.createReadStream`、`fs.writeFileSync`
-- Next.js：`getServerSideProps`、`getStaticProps`、`pages/api/`
-- Python：Flask/Django 路由装饰器、`app.run()`
-- Go：`net/http` 包、`gin`/`echo` 框架
-
-### 边界情况
-
-- **同构/SSR**：同时出现 `getServerSideProps` 和 `useEffect` → 双端，选服务端
-- **Electron**：`main.js` 用 `BrowserWindow` → 服务端；`renderer.js` 用 `document` → 客户端
-- **React Native**：`react-native` 包 → 客户端，用 fetch 模板
-
-### 项目结构辅助
-
-- `pages/api/`、`server/`、`api/`、`services/` → 倾向服务端
-- `components/`、`pages/`（非 API）、`hooks/`、`web/`、`client/` → 倾向客户端
-
----
-
-## 与其它参考文档的协同
-
-- 埋点模板：`<skill base directory>/references/instrumentation-guide.md` — 环境判定结果决定模板选择
-  - 客户端 → `fetch` 模板，需 `{{DEBUG_PORT}}` 和 `{{DEBUG_SESSION_ID}}`
-  - 服务端（含双端选择） → `import("fs")` 模板，需 `{{ABSOLUTE_PROJECT_PATH}}` 和 `{{DEBUG_SESSION_ID}}`
+不写缓存文件。每次制定埋点计划时重新确认——因为不同的目标文件可能属于不同环境，缓存一个文件的结论对其他文件没有意义。

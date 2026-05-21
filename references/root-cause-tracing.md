@@ -160,10 +160,3 @@ getCart 返回 null → checkout 收到 cart=null → applyCoupon 访问 null.di
 | 当前节点上游来源 | 上游节点是否可确定？ | 不可确定 → 转入埋点二分法 |
 | 当前节点假设验证 | 假设被证实还是证伪？ | 高置信度假设被违背 → 优先修复；多低置信度假设被证伪 → 触发方向自疑 |
 
----
-
-## 与其它参考文档的协同
-
-- 埋点体系：`<skill base directory>/references/instrumentation-guide.md` — 当调用链节点动态派发（DI 容器、策略模式）、数据流经多层变换无法肉眼追踪、或追溯超过 5 层仍不明确时，转入埋点二分法收集运行时数据，之后回到本文件继续追溯
-- 方向自疑：`<skill base directory>/references/direction-doubt.md` — 多轮追溯无法定位源头，或埋点证据与静态推理矛盾时触发
-- 分层重启：`<skill base directory>/references/restart-strategy.md` — 系统层重启后重新执行本文件
