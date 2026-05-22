@@ -55,8 +55,8 @@ function launchLinux() {
       });
       console.log(`[launcher] Debugger server launched in new window (${term.name})`);
       return;
-    } catch (err) {
-      // Try next terminal
+    } catch {
+      // Try next terminal.
     }
   }
 

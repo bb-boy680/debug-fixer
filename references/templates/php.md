@@ -15,6 +15,8 @@ try {
     if ($entry !== false) {
         file_put_contents($logDir . "/{{DEBUG_SESSION_ID}}.log", $entry . "\n", FILE_APPEND);
     }
-} catch (\Throwable $e) {}
+} catch (\Throwable $e) {
+    // Ignore debug instrumentation errors.
+}
 // #endregion DEBUG
 ```

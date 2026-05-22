@@ -16,6 +16,8 @@ try {
         java.nio.file.StandardOpenOption.CREATE,
         java.nio.file.StandardOpenOption.APPEND
     );
-} catch (Exception e) {}
+} catch (Exception e) {
+    // Ignore debug instrumentation errors.
+}
 // #endregion DEBUG
 ```

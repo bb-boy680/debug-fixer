@@ -16,6 +16,7 @@ begin
   }
   File.open(File.join(log_dir, "{{DEBUG_SESSION_ID}}.log"), "a") { |f| f.puts(JSON.generate(entry)) }
 rescue StandardError
+  # Ignore debug instrumentation errors.
 end
 # #endregion DEBUG
 ```

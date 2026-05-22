@@ -1,34 +1,59 @@
-# 埋点体系与分层验证策略
+# 埋点体系
 
-## 文档描述
+当多维扫描无法通过静态代码确定根因，或需要确认跨维度的交叉点时，注入埋点收集运行时证据。
 
-本文档定义 debug-fixer 的完整埋点体系：在哪埋、埋什么、怎么埋、怎么用结果反推假设。
+本文档包含三部分：环境判定、模板选择、埋点策略。
 
-核心目标：
-- 提供标准化埋点模板，保证日志格式统一。
-- 定义埋点定位策略，用最少埋点最快收敛到根因。
-- 定义日志内容清单，确保每条日志信息足够验证或证伪假设。
-- 制定分层验证与停止规则，避免无限埋点。
-- 优先使用现有运行时证据；只有证据仍不足时才注入新埋点。
+**目录：** [环境判定](#环境判定) · [核心原则](#核心原则) · [客户端调试服务](#客户端调试服务启动) · [日志格式](#日志格式) · [模板选择](#模板选择) · [常用模板](#常用模板) · [埋点策略](#埋点策略) · [安全检查](#注入前安全检查) · [清理联动](#与清理工具的联动)
 
-本文档在第三步制定埋点计划时调用。环境判定完成后，根据目标代码的语言选择对应模板。
+---
+
+## 环境判定
+
+在选模板之前，先确认目标代码的实际运行环境。这一步不需要从零分析——多维扫描重建调用链时，你已经知道代码跑在哪了。这里的目的是**避免被文件后缀名误导**。
+
+### 常见陷阱
+
+`.tsx` 不等于浏览器。Ink 用 React JSX 写终端 UI（Node），Next.js Server Component 也是 `.tsx`（Node）。同构代码可能同时跑在浏览器和 Node 两端。
+
+### 判定方式
+
+基于 package.json 的 dependencies 和代码内容做判断：
+
+| 特征 | 实际环境 | 选模板 |
+|------|----------|--------|
+| 有 `ink` 依赖 + `bin` 字段 | Node (TUI) | Node 文件写入 |
+| Next.js `app/` 下，无 `'use client'` | Node (Server Component) | Node 文件写入 |
+| Next.js `app/` 下，有 `'use client'` | 浏览器 | fetch |
+| `pages/api/` 或 `app/api/` | Node (API Route) | Node 文件写入 |
+| `ipcRenderer` + DOM API | 浏览器 (Electron 渲染) | fetch |
+| `BrowserWindow` / `ipcMain` | Node (Electron 主进程) | Node 文件写入 |
+| `import * as vscode from 'vscode'` | Node (VS Code Extension) | Node 文件写入 |
+| `react-native` + `StyleSheet` | 客户端 | 文件写入 |
+
+如果无法确定，默认选 Node 文件写入模板——文件写入不依赖 HTTP 服务的正确启动，少一个故障点。
+
+判定完成后在埋点计划中明确一行：`环境: [客户端/服务端]，模板: [fetch/文件写入]`。
+
+---
 
 ## 核心原则
 
-1. **最小化侵入**：首轮最多注入 3 处埋点，追加每次 ≤2 处。每处埋点必须有明确的验证目的。
-2. **模板统一，清理友好**：所有埋点必须使用 `#region DEBUG` 包裹。占位符替换规则固定，不可修改模板结构。
-3. **环境决定模板**：客户端使用 fetch 投递到本地日志服务，服务端直接写文件。
-4. **日志格式统一**：每条日志必须包含 `type`、`location`、`message`、`data`、`timestamp`。写入同一 session 日志文件。
-5. **二分收敛，而非盲插**：埋点位置基于调用链二分法选择，不是全量散点。
+- 每处埋点必须有明确的验证目的：验证一个具体假设，不是"看看这里有什么"
+- 所有埋点用 `#region DEBUG` 包裹：这是清理脚本 `cleanup-debug-blocks.js` 识别和删除的标记
+- 模板结构不可修改：只替换 `{{占位符}}`，不改日志字段、不改包裹方式
+- 日志写入同一 session 文件 `.debug/logs/{session_id}.log`，单行 JSON
+- 埋点只能读取和发送数据，不能修改业务变量或程序状态
+- 静默失败：序列化、网络、文件写入失败不能影响主流程——这也是为什么不用 `console.log`
 
-## 禁止行为
+### 为什么不用 console.log
 
-- **禁止使用语言自带的日志方式**：`console.log`、`print`、`fmt.Println`、`echo`、`puts` 等一律不允许。必须使用本文档定义的标准模板。
-- **禁止在埋点代码中修改业务变量或程序状态**：埋点只能读取和发送数据。
-- **禁止阻塞主流程**：fetch 必须带 `keepalive: true`，文件写入必须用追加模式且不阻塞。
-- **禁止让埋点自己抛错**：所有模板都要静默失败，不能因为序列化、网络、文件写入问题影响主流程。
-- **禁止不包裹 `#region DEBUG`**：无包裹的埋点无法被清理工具识别，会在清理时遗留。
-- **禁止在不可执行位置注入**：类定义、接口声明、类型定义中不可注入埋点。
+散点的 `console.log` 有三个问题：
+1. 混在业务日志里，事后无法批量清理
+2. 不同位置的日志格式不统一，无法按 session 聚合分析
+3. 生产环境可能被 strip 掉，也可能被留着——都不对
+
+标准模板用统一的 JSON 格式写入专用日志文件，清理脚本一键移除，不留痕迹。
 
 ## 客户端调试服务启动
 
@@ -115,8 +140,12 @@ void (() => {
       headers: { "Content-Type": "application/json" },
       body: __safeStringify(__payload),
       keepalive: true
-    }).catch(() => {});
-  } catch {}
+    }).catch(() => {
+      /* ignore debug transport errors */
+    });
+  } catch {
+    /* ignore debug instrumentation errors */
+  }
 })();
 // #endregion DEBUG
 ```
@@ -138,7 +167,9 @@ void (async () => {
         timestamp: Date.now()
       }) + "\n"
     );
-  } catch {}
+  } catch {
+    /* ignore debug instrumentation errors */
+  }
 })();
 // #endregion DEBUG
 ```
@@ -158,7 +189,9 @@ try {
       timestamp: Date.now()
     }) + "\n"
   );
-} catch {}
+} catch {
+  /* ignore debug instrumentation errors */
+}
 // #endregion DEBUG
 ```
 
@@ -226,8 +259,12 @@ void (() => {
         timestamp: Date.now()
       }),
       keepalive: true
-    }).catch(() => {});
-  } catch {}
+    }).catch(() => {
+      /* ignore debug transport errors */
+    });
+  } catch {
+    /* ignore debug instrumentation errors */
+  }
 })();
 // #endregion DEBUG
 ```
@@ -314,8 +351,7 @@ void (() => {
 2. **作用域检查**：注入位置必须在函数体/方法体/模块顶层可执行代码块内。禁止插入到类定义、接口声明、类型定义中。
 3. **端口一致性检查**：客户端 fetch 模板中的端口固定为 `9220`，与 `debugger-server.js` 保持一致。
 4. **服务端权限检查**：服务端模板中的 `{{ABSOLUTE_PROJECT_PATH}}` 必须是可写路径。
-5. **Go init 函数检查**：若目标文件已存在 `init()` 函数，将埋点代码追加到已有 `init()` 体内，不要创建重复定义。
-6. **清理注释兼容性**：注入的注释标记必须与 `cleanup-debug-blocks.js` 兼容（支持 `//` 和 `#` 开头的单行注释）。
+5. **清理注释兼容性**：注入的注释标记必须与 `cleanup-debug-blocks.js` 兼容（支持 `//` 和 `#` 开头的单行注释）。
 
 ## 与清理工具的联动
 
