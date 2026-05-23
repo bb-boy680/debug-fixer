@@ -111,42 +111,21 @@
 
 ```javascript
 // #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-void (() => {
-  try {
-    const __safeStringify = (value) => {
-      const seen = new WeakSet();
-      return JSON.stringify(value, (_, v) => {
-        if (typeof v === "bigint") return v.toString();
-        if (typeof v === "function") return "[Function]";
-        if (typeof v === "object" && v !== null) {
-          if (seen.has(v)) return "[Circular]";
-          seen.add(v);
-        }
-        return v;
-      });
-    };
-
-    const __payload = {
+try {
+  fetch("http://localhost:9220/debug/log?session_id={{DEBUG_SESSION_ID}}", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
       type: "logic",
       location: "{{FILE}}:{{LINE}}",
       message: "{{MESSAGE}}",
       pwd: "{{PROJECT_ROOT}}",
       data: {{DATA_SNAPSHOT}},
       timestamp: Date.now()
-    };
-
-    fetch("http://localhost:9220/debug/log?session_id={{DEBUG_SESSION_ID}}", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: __safeStringify(__payload),
-      keepalive: true
-    }).catch(() => {
-      /* ignore debug transport errors */
-    });
-  } catch {
-    /* ignore debug instrumentation errors */
-  }
-})();
+    }),
+    keepalive: true
+  }).catch(() => {});
+} catch {}
 // #endregion DEBUG
 ```
 
@@ -154,23 +133,19 @@ void (() => {
 
 ```javascript
 // #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-void (async () => {
-  try {
-    const fs = await import("node:fs");
-    fs.appendFileSync(
-      "{{ABSOLUTE_PROJECT_PATH}}/.debug/logs/{{DEBUG_SESSION_ID}}.log",
-      JSON.stringify({
-        type: "logic",
-        location: "{{FILE}}:{{LINE}}",
-        message: "{{MESSAGE}}",
-        data: {{DATA_SNAPSHOT}},
-        timestamp: Date.now()
-      }) + "\n"
-    );
-  } catch {
-    /* ignore debug instrumentation errors */
-  }
-})();
+try {
+  const fs = await import("node:fs");
+  fs.appendFileSync(
+    "{{ABSOLUTE_PROJECT_PATH}}/.debug/logs/{{DEBUG_SESSION_ID}}.log",
+    JSON.stringify({
+      type: "logic",
+      location: "{{FILE}}:{{LINE}}",
+      message: "{{MESSAGE}}",
+      data: {{DATA_SNAPSHOT}},
+      timestamp: Date.now()
+    }) + "\n"
+  );
+} catch {}
 // #endregion DEBUG
 ```
 
@@ -183,15 +158,13 @@ try {
     "{{ABSOLUTE_PROJECT_PATH}}/.debug/logs/{{DEBUG_SESSION_ID}}.log",
     JSON.stringify({
       type: "logic",
-      location: `${__filename}:{{LINE}}`,
+      location: "{{FILE}}:{{LINE}}",
       message: "{{MESSAGE}}",
       data: {{DATA_SNAPSHOT}},
       timestamp: Date.now()
     }) + "\n"
   );
-} catch {
-  /* ignore debug instrumentation errors */
-}
+} catch {}
 // #endregion DEBUG
 ```
 
@@ -206,7 +179,7 @@ try:
     with open(os.path.join(log_dir, "{{DEBUG_SESSION_ID}}.log"), "a", encoding="utf-8") as f:
         f.write(json.dumps({
             "type": "logic",
-            "location": f"{__file__}:{{LINE}}",
+            "location": "{{FILE}}:{{LINE}}",
             "message": "{{MESSAGE}}",
             "data": {{DATA_SNAPSHOT}},
             "timestamp": time.time()
@@ -220,52 +193,38 @@ except Exception:
 
 ```javascript
 // #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-void (() => {
-  try {
-    const __el = document.querySelector('{{TARGET_SELECTOR}}');
-    if (!__el) return;
-
-    const __rect = __el.getBoundingClientRect();
-    const __styles = getComputedStyle(__el);
-    fetch("http://localhost:9220/debug/log?session_id={{DEBUG_SESSION_ID}}", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: "visual",
-        location: "{{FILE}}:{{LINE}}",
-        message: "[视觉快照] {{MESSAGE}}",
-        pwd: "{{PROJECT_ROOT}}",
-        data: {
-          computedStyles: {
-            display: __styles.display,
-            visibility: __styles.visibility,
-            position: __styles.position,
-            zIndex: __styles.zIndex,
-            pointerEvents: __styles.pointerEvents,
-            opacity: __styles.opacity,
-            transform: __styles.transform,
-            overflow: __styles.overflow
-          },
-          boundingClientRect: {
-            x: __rect.x, y: __rect.y,
-            width: __rect.width, height: __rect.height
-          },
-          classList: Array.from(__el.classList),
-          viewport: {
-            width: window.innerWidth,
-            height: window.innerHeight
-          }
+try {
+  const __el = document.querySelector('{{TARGET_SELECTOR}}');
+  if (!__el) return;
+  const __rect = __el.getBoundingClientRect();
+  const __styles = getComputedStyle(__el);
+  fetch("http://localhost:9220/debug/log?session_id={{DEBUG_SESSION_ID}}", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "visual",
+      location: "{{FILE}}:{{LINE}}",
+      message: "[视觉快照] {{MESSAGE}}",
+      data: {
+        computedStyles: {
+          display: __styles.display,
+          visibility: __styles.visibility,
+          position: __styles.position,
+          zIndex: __styles.zIndex,
+          pointerEvents: __styles.pointerEvents,
+          opacity: __styles.opacity,
+          transform: __styles.transform,
+          overflow: __styles.overflow
         },
-        timestamp: Date.now()
-      }),
-      keepalive: true
-    }).catch(() => {
-      /* ignore debug transport errors */
-    });
-  } catch {
-    /* ignore debug instrumentation errors */
-  }
-})();
+        boundingClientRect: { x: __rect.x, y: __rect.y, width: __rect.width, height: __rect.height },
+        classList: Array.from(__el.classList),
+        viewport: { width: window.innerWidth, height: window.innerHeight }
+      },
+      timestamp: Date.now()
+    }),
+    keepalive: true
+  }).catch(() => {});
+} catch {}
 // #endregion DEBUG
 ```
 
