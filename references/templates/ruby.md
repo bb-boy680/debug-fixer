@@ -1,4 +1,4 @@
-# Ruby 埋点模板
+# Ruby Instrumentation Template
 
 ```ruby
 # #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]

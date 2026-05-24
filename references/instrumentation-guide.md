@@ -1,131 +1,129 @@
-# 埋点体系
+# Instrumentation System
 
-当多维扫描无法通过静态代码确定根因，或需要确认跨维度的交叉点时，注入埋点收集运行时证据。
+When multi-dimension scanning cannot determine the root cause through static code analysis alone, or when you need to confirm cross-dimension cross-cutting points, inject instrumentation to collect runtime evidence.
 
-本文档包含三部分：环境判定、模板选择、埋点策略。
+This document has three parts: environment detection, template selection, and instrumentation strategy.
 
-**目录：** [环境判定](#环境判定) · [核心原则](#核心原则) · [客户端调试服务](#客户端调试服务启动) · [日志格式](#日志格式) · [模板选择](#模板选择) · [常用模板](#常用模板) · [埋点策略](#埋点策略) · [安全检查](#注入前安全检查) · [清理联动](#与清理工具的联动)
-
----
-
-## 环境判定
-
-在选模板之前，先确认目标代码的实际运行环境。这一步不需要从零分析——多维扫描重建调用链时，你已经知道代码跑在哪了。这里的目的是**避免被文件后缀名误导**。
-
-### 常见陷阱
-
-`.tsx` 不等于浏览器。Ink 用 React JSX 写终端 UI（Node），Next.js Server Component 也是 `.tsx`（Node）。同构代码可能同时跑在浏览器和 Node 两端。
-
-### 判定方式
-
-基于 package.json 的 dependencies 和代码内容做判断：
-
-| 特征 | 实际环境 | 选模板 |
-|------|----------|--------|
-| 有 `ink` 依赖 + `bin` 字段 | Node (TUI) | Node 文件写入 |
-| Next.js `app/` 下，无 `'use client'` | Node (Server Component) | Node 文件写入 |
-| Next.js `app/` 下，有 `'use client'` | 浏览器 | fetch |
-| `pages/api/` 或 `app/api/` | Node (API Route) | Node 文件写入 |
-| `ipcRenderer` + DOM API | 浏览器 (Electron 渲染) | fetch |
-| `BrowserWindow` / `ipcMain` | Node (Electron 主进程) | Node 文件写入 |
-| `import * as vscode from 'vscode'` | Node (VS Code Extension) | Node 文件写入 |
-| `react-native` + `StyleSheet` | 客户端 | 文件写入 |
-
-如果无法确定，默认选 Node 文件写入模板——文件写入不依赖 HTTP 服务的正确启动，少一个故障点。
-
-判定完成后在埋点计划中明确一行：`环境: [客户端/服务端]，模板: [fetch/文件写入]`。
+**Contents:** [Environment Detection](#environment-detection) · [Core Principles](#core-principles) · [Client Debug Service](#client-debug-service-startup) · [Log Format](#log-format) · [Template Selection](#template-selection) · [Common Templates](#common-templates) · [Instrumentation Strategy](#instrumentation-strategy) · [Pre-Injection Checks](#pre-injection-safety-checks) · [Cleanup Integration](#cleanup-integration)
 
 ---
 
-## 核心原则
+## Environment Detection
 
-- 每处埋点必须有明确的验证目的：验证一个具体假设，不是"看看这里有什么"
-- 所有埋点用 `#region DEBUG` 包裹：这是清理脚本 `cleanup-debug-blocks.js` 识别和删除的标记
-- 模板结构不可修改：只替换 `{{占位符}}`，不改日志字段、不改包裹方式
-- 日志写入同一 session 文件 `.debug/logs/{session_id}.log`，单行 JSON
-- 埋点只能读取和发送数据，不能修改业务变量或程序状态
-- 静默失败：序列化、网络、文件写入失败不能影响主流程——这也是为什么不用 `console.log`
+Before selecting a template, confirm the target code's actual runtime environment. You already know where the code runs from the call chain you reconstructed during multi-dimension scanning. The purpose here is to **avoid being misled by file extensions**.
 
-### 为什么不用 console.log
+### Common Pitfalls
 
-散点的 `console.log` 有三个问题：
-1. 混在业务日志里，事后无法批量清理
-2. 不同位置的日志格式不统一，无法按 session 聚合分析
-3. 生产环境可能被 strip 掉，也可能被留着——都不对
+`.tsx` does not mean browser. Ink uses React JSX for terminal UI (Node). Next.js Server Components are also `.tsx` (Node). Isomorphic code may run in both browser and Node environments.
 
-标准模板用统一的 JSON 格式写入专用日志文件，清理脚本一键移除，不留痕迹。
+### Detection Method
 
-## 客户端调试服务启动
+Judge based on package.json dependencies and code content:
 
-客户端埋点通过本地 HTTP 日志服务接收日志。注入埋点前必须确保服务已运行：
+| Signal | Actual Environment | Template |
+|--------|-------------------|----------|
+| `ink` dependency + `bin` field | Node (TUI) | Node file write |
+| Next.js `app/`, no `'use client'` | Node (Server Component) | Node file write |
+| Next.js `app/`, with `'use client'` | Browser | fetch |
+| `pages/api/` or `app/api/` | Node (API Route) | Node file write |
+| `ipcRenderer` + DOM API | Browser (Electron renderer) | fetch |
+| `BrowserWindow` / `ipcMain` | Node (Electron main) | Node file write |
+| `import * as vscode from 'vscode'` | Node (VS Code Extension) | Node file write |
+| `react-native` + `StyleSheet` | Client | File write |
 
-1. **健康检查**：GET `http://localhost:9220/health`
-   - 返回 `200 OK` → 服务已在运行，可直接注入埋点
-   - 无响应或连接拒绝 → 服务未启动，执行步骤 2
-2. **启动服务**：`node <skill base directory>/scripts/launch-debugger.js`
-   - 在新终端窗口中启动，端口固定 9220
-   - `pwd` 通过 HTTP 请求体传入，不是启动参数。一个服务可服务多个项目
-3. 再次健康检查确认服务可达
+If uncertain, default to Node file write — file writes don't depend on HTTP service availability, one less failure point.
 
-> `{{PROJECT_ROOT}}` 占位符替换为当前项目的根目录绝对路径（通过 `pwd` 命令获取），替换到请求体的 `pwd` 字段。
+After detection, state clearly in the instrumentation plan: `Environment: [client/server], Template: [fetch/file write]`.
 
-## 日志格式
+---
 
-所有埋点输出单行 JSON，写入 `.debug/logs/<session_id>.log`。单次埋点尽量只记录定位所需的最小字段，避免大对象和循环引用。
+## Core Principles
+
+- Each instrumentation point must have a clear verification purpose: validate a specific hypothesis, not "see what's here"
+- All instrumentation wrapped with `#region DEBUG`: this is the marker `cleanup-debug-blocks.js` recognizes and removes
+- Template structure must not be modified: only replace `{{placeholders}}`, don't change log fields or wrapping
+- Logs written to the same session file `.debug/logs/{session_id}.log`, one JSON line per entry
+- Instrumentation only reads and sends data; it must not modify business variables or program state
+- Fail silently: serialization, network, or file write failures must not affect the main flow — this is also why `console.log` is not used
+
+### Why Not console.log
+
+Scattered `console.log` has three problems:
+1. Mixed into application logs, cannot be batch-cleaned afterward
+2. Inconsistent formats across locations, cannot aggregate by session for analysis
+3. May be stripped in production, or may be left in — both are wrong
+
+Standard templates write unified JSON to dedicated log files. The cleanup script removes them in one pass, no trace left behind.
+
+## Client Debug Service Startup
+
+Client-side instrumentation sends logs through a local HTTP log service. Ensure the service is running before injecting instrumentation:
+
+1. **Health check**: GET `http://localhost:9220/health`
+   - Returns `200 OK` → service is running, proceed with injection
+   - No response or connection refused → service not started, go to step 2
+2. **Start service**: `node <skill base directory>/scripts/launch-debugger.js`
+   - Launches in a new terminal window, port fixed at 9220
+   - `pwd` is passed via HTTP request body, not as a startup parameter. One service can serve multiple projects
+3. Health check again to confirm service is reachable
+
+> Replace `{{PROJECT_ROOT}}` with the absolute path of the current project root (obtained via `pwd` command), placed in the `pwd` field of the request body.
+
+## Log Format
+
+All instrumentation outputs a single line of JSON, written to `.debug/logs/<session_id>.log`. For each instrumentation, record only the minimum fields needed for localization; avoid large objects and circular references.
 
 ```json
 {
   "type": "logic | visual",
-  "location": "文件路径:行号",
-  "message": "[进入] / [返回] / [分支] / [异常] / [状态变化] / [视觉快照]",
+  "location": "file_path:line_number",
+  "message": "[enter] / [return] / [branch] / [exception] / [state_change] / [visual_snapshot]",
   "data": { },
   "timestamp": 1712345678901
 }
 ```
 
-- `type: "logic"` — 逻辑埋点，`data` 包含关键变量快照。
-- `type: "visual"` — 视觉埋点，`data` 包含 `computedStyles`、`boundingClientRect`、`viewport`、`classList` 等。
+- `type: "logic"` — logic instrumentation, `data` contains key variable snapshots.
+- `type: "visual"` — visual instrumentation, `data` contains `computedStyles`, `boundingClientRect`, `viewport`, `classList`, etc.
 
-## 模板选择
+## Template Selection
 
-根据环境判定结果和项目语言选择模板。**常用模板直接在下方，其他语言模板按需读取对应文件。**
+Select based on environment detection result and project language. **Common templates are directly below; other language templates are read on demand from their respective files.**
 
-| 语言 | 环境 | 模板位置 |
-|------|------|----------|
-| JavaScript / TypeScript | 客户端（浏览器） | 下方 — JS 客户端 fetch |
-| JavaScript / TypeScript | 服务端（Node ESM） | 下方 — Node.js ES Modules |
-| JavaScript / TypeScript | 服务端（Node CJS） | 下方 — Node.js CommonJS |
-| Python | 服务端 | 下方 — Python |
-| Go | 服务端 | `<skill base directory>/references/templates/go.md>` |
-| Java | 服务端 | `<skill base directory>/references/templates/java.md>` |
-| Ruby | 服务端 | `<skill base directory>/references/templates/ruby.md>` |
-| PHP | 服务端 | `<skill base directory>/references/templates/php.md>` |
-| Rust | 服务端 | `<skill base directory>/references/templates/rust.md>` |
-| 视觉快照 | 客户端（浏览器） | 下方 — 视觉快照模板 |
+| Language | Environment | Template Location |
+|----------|-------------|-------------------|
+| JavaScript / TypeScript | Client (Browser) | Below — JS Client fetch |
+| JavaScript / TypeScript | Server (Node ESM) | Below — Node.js ES Modules |
+| JavaScript / TypeScript | Server (Node CJS) | Below — Node.js CommonJS |
+| Python | Server | Below — Python |
+| Go | Server | `<skill base directory>/references/templates/go.md>` |
+| Java | Server | `<skill base directory>/references/templates/java.md>` |
+| Ruby | Server | `<skill base directory>/references/templates/ruby.md>` |
+| PHP | Server | `<skill base directory>/references/templates/php.md>` |
+| Rust | Server | `<skill base directory>/references/templates/rust.md>` |
+| Visual Snapshot | Client (Browser) | Below — Visual Snapshot template |
 
-> 清理兼容性说明：`cleanup-debug-blocks.js` 默认处理以 `//` 或 `#` 开头的单行注释标记 `#region DEBUG` / `#endregion DEBUG`。
+> Cleanup compatibility: `cleanup-debug-blocks.js` handles single-line comment markers `#region DEBUG` / `#endregion DEBUG` prefixed with `//` or `#`.
 
-## 常用模板
+## Common Templates
 
-### JavaScript (客户端 fetch)
+### JavaScript (Client fetch)
 
 ```javascript
 // #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-try {
-  fetch("http://localhost:9220/debug/log?session_id={{DEBUG_SESSION_ID}}", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "logic",
-      location: "{{FILE}}:{{LINE}}",
-      message: "{{MESSAGE}}",
-      pwd: "{{PROJECT_ROOT}}",
-      data: {{DATA_SNAPSHOT}},
-      timestamp: Date.now()
-    }),
-    keepalive: true
-  }).catch(() => {});
-} catch {}
+fetch("http://localhost:9220/debug/log?session_id={{DEBUG_SESSION_ID}}", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    type: "logic",
+    location: "{{FILE}}:{{LINE}}",
+    message: "{{MESSAGE}}",
+    pwd: "{{PROJECT_ROOT}}",
+    data: {{DATA_SNAPSHOT}},
+    timestamp: Date.now()
+  }),
+  keepalive: true
+});
 // #endregion DEBUG
 ```
 
@@ -133,19 +131,17 @@ try {
 
 ```javascript
 // #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-try {
-  const fs = await import("node:fs");
-  fs.appendFileSync(
-    "{{ABSOLUTE_PROJECT_PATH}}/.debug/logs/{{DEBUG_SESSION_ID}}.log",
-    JSON.stringify({
-      type: "logic",
-      location: "{{FILE}}:{{LINE}}",
-      message: "{{MESSAGE}}",
-      data: {{DATA_SNAPSHOT}},
-      timestamp: Date.now()
-    }) + "\n"
-  );
-} catch {}
+const fs = await import("node:fs");
+fs.appendFileSync(
+  "{{ABSOLUTE_PROJECT_PATH}}/.debug/logs/{{DEBUG_SESSION_ID}}.log",
+  JSON.stringify({
+    type: "logic",
+    location: "{{FILE}}:{{LINE}}",
+    message: "{{MESSAGE}}",
+    data: {{DATA_SNAPSHOT}},
+    timestamp: Date.now()
+  }) + "\n"
+);
 // #endregion DEBUG
 ```
 
@@ -153,18 +149,16 @@ try {
 
 ```javascript
 // #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-try {
-  require("fs").appendFileSync(
-    "{{ABSOLUTE_PROJECT_PATH}}/.debug/logs/{{DEBUG_SESSION_ID}}.log",
-    JSON.stringify({
-      type: "logic",
-      location: "{{FILE}}:{{LINE}}",
-      message: "{{MESSAGE}}",
-      data: {{DATA_SNAPSHOT}},
-      timestamp: Date.now()
-    }) + "\n"
-  );
-} catch {}
+require("fs").appendFileSync(
+  "{{ABSOLUTE_PROJECT_PATH}}/.debug/logs/{{DEBUG_SESSION_ID}}.log",
+  JSON.stringify({
+    type: "logic",
+    location: "{{FILE}}:{{LINE}}",
+    message: "{{MESSAGE}}",
+    data: {{DATA_SNAPSHOT}},
+    timestamp: Date.now()
+  }) + "\n"
+);
 // #endregion DEBUG
 ```
 
@@ -172,152 +166,151 @@ try {
 
 ```python
 # #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-try:
-    import json, time, os
-    log_dir = os.path.join("{{ABSOLUTE_PROJECT_PATH}}", ".debug", "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    with open(os.path.join(log_dir, "{{DEBUG_SESSION_ID}}.log"), "a", encoding="utf-8") as f:
-        f.write(json.dumps({
-            "type": "logic",
-            "location": "{{FILE}}:{{LINE}}",
-            "message": "{{MESSAGE}}",
-            "data": {{DATA_SNAPSHOT}},
-            "timestamp": time.time()
-        }, default=str) + "\n")
-except Exception:
-    pass
+import json, time, os
+log_dir = os.path.join("{{ABSOLUTE_PROJECT_PATH}}", ".debug", "logs")
+os.makedirs(log_dir, exist_ok=True)
+with open(os.path.join(log_dir, "{{DEBUG_SESSION_ID}}.log"), "a", encoding="utf-8") as f:
+    f.write(json.dumps({
+        "type": "logic",
+        "location": "{{FILE}}:{{LINE}}",
+        "message": "{{MESSAGE}}",
+        "data": {{DATA_SNAPSHOT}},
+        "timestamp": time.time()
+    }, default=str) + "\n")
 # #endregion DEBUG
 ```
 
-### 视觉快照 (仅 JavaScript 客户端)
+### Visual Snapshot (JavaScript Client Only)
 
 ```javascript
 // #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]
-try {
-  const __el = document.querySelector('{{TARGET_SELECTOR}}');
-  if (!__el) return;
-  const __rect = __el.getBoundingClientRect();
-  const __styles = getComputedStyle(__el);
-  fetch("http://localhost:9220/debug/log?session_id={{DEBUG_SESSION_ID}}", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "visual",
-      location: "{{FILE}}:{{LINE}}",
-      message: "[视觉快照] {{MESSAGE}}",
-      data: {
-        computedStyles: {
-          display: __styles.display,
-          visibility: __styles.visibility,
-          position: __styles.position,
-          zIndex: __styles.zIndex,
-          pointerEvents: __styles.pointerEvents,
-          opacity: __styles.opacity,
-          transform: __styles.transform,
-          overflow: __styles.overflow
-        },
-        boundingClientRect: { x: __rect.x, y: __rect.y, width: __rect.width, height: __rect.height },
-        classList: Array.from(__el.classList),
-        viewport: { width: window.innerWidth, height: window.innerHeight }
+const __el = document.querySelector('{{TARGET_SELECTOR}}');
+if (!__el) return;
+const __rect = __el.getBoundingClientRect();
+const __styles = getComputedStyle(__el);
+fetch("http://localhost:9220/debug/log?session_id={{DEBUG_SESSION_ID}}", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    type: "visual",
+    location: "{{FILE}}:{{LINE}}",
+    message: "[visual snapshot] {{MESSAGE}}",
+    data: {
+      computedStyles: {
+        display: __styles.display,
+        visibility: __styles.visibility,
+        position: __styles.position,
+        zIndex: __styles.zIndex,
+        pointerEvents: __styles.pointerEvents,
+        opacity: __styles.opacity,
+        transform: __styles.transform,
+        overflow: __styles.overflow
       },
-      timestamp: Date.now()
-    }),
-    keepalive: true
-  }).catch(() => {});
-} catch {}
+      boundingClientRect: { x: __rect.x, y: __rect.y, width: __rect.width, height: __rect.height },
+      classList: Array.from(__el.classList),
+      viewport: { width: window.innerWidth, height: window.innerHeight }
+    },
+    timestamp: Date.now()
+  }),
+  keepalive: true
+});
 // #endregion DEBUG
 ```
 
-## 埋点策略
+## Instrumentation Strategy
 
-### 二分定位法
+### Bisection Method
 
-埋点位置不靠怀疑度打分，靠**调用链二分法**收敛：
+Select instrumentation positions through call-chain bisection, not suspicion scoring:
 
-1. 画出从异常表现点到数据入口的完整调用链。
-2. 在调用链**中点**注入首处埋点。
-3. 执行复现，检查日志：
-   - 数据**正确** → 问题在下半段（靠近异常点），在下半段中点继续二分。
-   - 数据**已偏离** → 问题在上半段（靠近入口），在上半段中点继续二分。
-4. 每轮最多 3 处埋点，2-3 轮即可收敛到单个节点。
+1. Draw the complete call chain from the anomaly point to the data entry point.
+2. Inject the first instrumentation at the call chain **midpoint**.
+3. Reproduce and examine logs:
+   - Data is **correct** → problem is in the lower half (closer to anomaly), continue bisecting in the lower half midpoint.
+   - Data is **already deviated** → problem is in the upper half (closer to entry), continue bisecting in the upper half midpoint.
+4. Max 3 instrumentation points per round. 2-3 rounds should converge to a single node.
 
-> 对于多分支调用链（非单链），在分叉点同时埋点以确定走的是哪条分支。
+> For multi-branch call chains (non-linear), instrument at branch points simultaneously to determine which branch is taken.
 
-### 日志内容清单
+### Log Content Checklist
 
-每轮埋点计划必须整体覆盖四个问题，缺一不可：
+Each round of instrumentation must answer all four questions:
 
-| 问题 | 对应字段 | 示例 |
-|------|----------|------|
-| 函数收到了什么？ | 入参 | `{ args: [userId, options] }` |
-| 函数返回了什么？ | 出值 | `{ return: { ok: true } }` |
-| 走了哪个分支？ | 分支条件 | `{ branch: "isAdmin", value: false }` |
-| 对外产生了什么影响？ | 副作用状态 | `{ storeState: {...}, domChanged: true }` |
+| Question | Field | Example |
+|----------|-------|---------|
+| What did the function receive? | Input | `{ args: [userId, options] }` |
+| What did the function return? | Output | `{ return: { ok: true } }` |
+| Which branch was taken? | Branch condition | `{ branch: "isAdmin", value: false }` |
+| What side effects occurred? | State changes | `{ storeState: {...}, domChanged: true }` |
 
-### 分层验证与停止规则
+### Layered Verification & Stop Rules
 
-#### 首轮埋点
-- 基于二分法选取 ≤3 个位置。
-- 执行复现，收集日志。
+#### First Round
+- Select ≤3 positions via bisection.
+- Reproduce, collect logs.
 
-#### 调用链核验
+#### Call Chain Verification
 
-首轮埋点日志收集后，在分析数据偏差之前，必须核验静态构建的调用链是否正确：
+After collecting first-round instrumentation logs, before analyzing data deviation, verify that the statically-constructed call chain is correct:
 
-1. 按时间戳排序日志，用 `location` 字段还原实际执行顺序。
-2. 与静态调用链逐层对比：
-   - **一致** → 调用链正确，进入偏差分析。
-   - **存在差异**（多出中间层、缺少某跳） → 按实际日志修正调用链，重新制定埋点计划。
-3. 调用链修正后按原有进度继续，不回到二分起点。
+1. Sort logs by timestamp, reconstruct actual execution order from the `location` field.
+2. Compare layer by layer against the static call chain:
+   - **Consistent** → call chain correct, proceed to deviation analysis.
+   - **Differences found** (extra intermediate layers, missing hops) → correct the call chain based on actual logs, redesign the instrumentation plan.
+3. After chain correction, continue from current progress without returning to the bisection starting point.
 
-> 这一步无需额外代码，仅检查已有日志的 `location` 和 `data`，但能避免在错误调用链上浪费全部埋点轮次。
+> This step requires no additional code — only examining existing logs' `location` and `data` — but avoids wasting all instrumentation rounds on an incorrect call chain.
 
-#### 偏差分析后决策
+#### Decision After Deviation Analysis
 
-1. **捕获到偏差**
-   - **本地产生**（入参符合假设但输出/副作用错误）→ 当前节点即源头，停止追加。
-   - **上游传入**（入参已偏离假设）→ 向上二分继续追踪。
-2. **未捕获到偏差**
-   - 在未覆盖的调用链段取中点继续埋点，同时确认复现步骤一致。
-   - 连续两轮未捕获偏差，触发**方向自疑**。
-3. **达到最大追加轮次**
-   - 总共最多 3 轮埋点追加（首轮 + 2 次追加）。
-   - 3 轮耗尽仍无法定位源头，触发方向自疑，终止埋点。
+1. **Deviation captured**
+   - **Locally produced** (input matches hypothesis but output/side-effect is wrong) → current node is the source, stop adding.
+   - **Upstream passed in** (input already deviated from hypothesis) → continue bisecting upward.
+2. **No deviation captured**
+   - Bisect at the midpoint of the uncovered call chain segment, while confirming reproduction steps are consistent.
+   - Two consecutive rounds without capturing deviation → trigger **direction doubt**.
+3. **Max additional rounds reached**
+   - Maximum of 3 instrumentation rounds total (first round + 2 additional rounds).
+   - 3 rounds exhausted without locating the source → trigger direction doubt, terminate instrumentation.
 
-### 视觉问题的特殊处理
+### Visual Issue Special Handling
 
-- 视觉快照日志 `type: "visual"`，与逻辑日志存储在同一 session 文件中，按时间戳排序分析。
-- 视觉偏差源头判定：
-  - 自身 CSS 规则错误 → 本地产生。
-  - 受父容器继承/覆盖影响 → 向上追踪 DOM 树（视为上游传入）。
-  - JS 动态计算错误 → 转入逻辑调用链追溯。
+The visual snapshot template is only a reference framework — **you decide which CSS properties and DOM dimensions to observe based on the bug's rendering chain**. The 8 properties in the template are examples, not a fixed checklist. The key question: which aspect does this bug involve — position, sizing, layering, or visibility? What are the corresponding CSS properties and computed styles?
 
-### Heisenbug 防护
+- Core principle: **simultaneously log "calculated values" and "actual DOM values," and compare the difference.** The difference itself is the clue — e.g., JS calculates height as 979px but DOM actual is 991px, indicating CSS auto-compute behavior is affecting the result.
+- Visual snapshot logs use `type: "visual"`, stored in the same session file as logic logs, analyzed by timestamp order.
+- Visual deviation source determination:
+  - Self CSS rule error → locally produced.
+  - Affected by parent container inheritance/override → trace upward through DOM tree (treated as upstream passed in).
+  - JS dynamic calculation error → switch to logic call chain tracing.
+  - **Browser auto-compute behavior** (auto sizing, flex/grid layout allocation, viewBox adaptation) → not a CSS mistake, but computed results don't match expectations; need to explicitly override default behavior.
 
-埋点本身可能改变程序行为，尤其是涉及竞态和时序的 BUG：
+### Heisenbug Protection
 
-- `fetch` 必须使用 `keepalive: true`，确保日志不因页面关闭丢失，同时不阻塞主线程。
-- 文件写入必须使用追加模式，不加锁。
-- **如果 BUG 涉及竞态/异步时序**：埋点后 BUG 消失是重要信号——埋点引入的微小时序变化改变了执行顺序。此时不应继续埋点，应转为静态代码推理，重点检查 `Promise`、`setTimeout`、`await` 的时序依赖。
-- 视觉快照变量使用双下划线前缀（`__el`、`__rect`）避免污染作用域。
-- 所有异常必须静默处理，日志写入失败不得抛出错误。
+Instrumentation itself can change program behavior, especially for bugs involving race conditions and timing:
 
-## 注入前安全检查
+- `fetch` must use `keepalive: true` to ensure logs aren't lost on page close, while not blocking the main thread.
+- File writes must use append mode, no locking.
+- **If the bug involves race conditions/async timing**: the bug disappearing after instrumentation is an important signal — the slight timing change introduced by instrumentation altered the execution order. Do not continue instrumentation; switch to static code reasoning, focusing on timing dependencies of `Promise`, `setTimeout`, `await`.
+- Visual snapshot variables use double-underscore prefix (`__el`, `__rect`) to avoid polluting scope.
+- All exceptions must be handled silently; log write failures must not throw errors.
 
-在向用户代码写入任何埋点前，必须逐项确认：
+## Pre-Injection Safety Checks
 
-1. **重复注入检查**：目标位置是否已存在 `#region DEBUG` 块？若已有，不得再次注入。
-2. **作用域检查**：注入位置必须在函数体/方法体/模块顶层可执行代码块内。禁止插入到类定义、接口声明、类型定义中。
-3. **端口一致性检查**：客户端 fetch 模板中的端口固定为 `9220`，与 `debugger-server.js` 保持一致。
-4. **服务端权限检查**：服务端模板中的 `{{ABSOLUTE_PROJECT_PATH}}` 必须是可写路径。
-5. **清理注释兼容性**：注入的注释标记必须与 `cleanup-debug-blocks.js` 兼容（支持 `//` 和 `#` 开头的单行注释）。
+Before writing any instrumentation into user code, verify each item:
 
-## 与清理工具的联动
+1. **Duplicate injection check**: Does the target location already have a `#region DEBUG` block? If so, do not inject again.
+2. **Scope check**: The injection point must be inside a function body/method body/module top-level executable code block. Do not inject into class definitions, interface declarations, or type definitions.
+3. **Port consistency check**: The port in the client fetch template is fixed at `9220`, consistent with `debugger-server.js`.
+4. **Server writability check**: `{{ABSOLUTE_PROJECT_PATH}}` in server templates must be a writable path.
+5. **Cleanup comment compatibility**: Injected comment markers must be compatible with `cleanup-debug-blocks.js` (supports `//` and `#` prefixed single-line comments).
 
-确认回合通过后，在同一个回合里决定是否调用清理脚本：
+## Cleanup Integration
+
+After the confirmation round passes, decide whether to call the cleanup script in the same round:
 
 ```bash
-node <skill base directory>/scripts/cleanup-debug-blocks.js --session-id <id> --files <文件列表>
+node <skill base directory>/scripts/cleanup-debug-blocks.js --session-id <id> --files <file list>
 ```
 
-自动清除所有源文件中的 `#region DEBUG` 块和对应的日志文件。**直接使用脚本完成全部清理，不手动删除。**清理动作以用户确认过的结果为前提，不要在用户还没回复前自动执行。
+Automatically removes all `#region DEBUG` blocks in source files and the corresponding log files. **Use the script for all cleanup — don't manually delete.** Cleanup is predicated on user-confirmed results; don't execute before the user has responded.

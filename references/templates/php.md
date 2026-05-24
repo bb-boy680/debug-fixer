@@ -1,4 +1,4 @@
-# PHP 埋点模板
+# PHP Instrumentation Template
 
 ```php
 // #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]

@@ -1,4 +1,4 @@
-# Rust 埋点模板
+# Rust Instrumentation Template
 
 ```rust
 // #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]

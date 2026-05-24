@@ -1,4 +1,4 @@
-# Java 埋点模板
+# Java Instrumentation Template
 
 ```java
 // #region DEBUG [sessionId: {{DEBUG_SESSION_ID}}]

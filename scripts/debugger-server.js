@@ -96,6 +96,9 @@ async function handleLogRequest(req, res) {
       logData.timestamp = Date.now();
     }
 
+    // Strip pwd from the logged entry — only needed for file path resolution
+    delete logData.pwd;
+
     const logFile = path.join(logsDir, `${sessionId}.log`);
     fs.appendFileSync(logFile, JSON.stringify(logData) + "\n");
 

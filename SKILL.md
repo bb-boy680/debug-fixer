@@ -1,106 +1,141 @@
 ---
 name: debug-fixer
-description: 当用户报告 bug、崩溃、测试失败、功能异常、UI 显示错乱、样式问题、数据不对、点击无反应、或行为与预期不符时使用。核心流程：扫描代码定位候选源头 → 允许一次静态修复 → 失败则埋点收集运行时证据 → 根据证据修复 → 用户确认。卡住时派独立 agent 以外部视角审查。修好后自动清理埋点代码。
+description: Use when a user reports a bug, crash, test failure, unexpected behavior, UI display issues, styling problems, incorrect data, unresponsive clicks, or behavior that doesn't match expectations. Spawns a multi-dimension scan agent to globally identify candidate root causes. Allows exactly one static fix attempt; if it fails, collects runtime evidence via instrumentation (frontend HTTP + backend file write, 7 language templates) to pinpoint the root cause. When stuck, spawns an independent review agent to identify blind spots from an external perspective. Automatically cleans up instrumentation after fix.
 ---
 
-## 路径约定
+## Paths & Resources
 
-`agents/`、`references/`、`scripts/` 路径相对于 `<skill base directory>` 解析。两个 agent（`agents/multi-dimension-scan`、`agents/senior-review`）可独立派出，有独立上下文。唯一的 reference 是 `references/instrumentation-guide.md`（埋点模板），只有需要注入埋点时才读。
+- Two agents (`agents/multi-dimension-scan`, `agents/senior-review`) can be spawned independently with isolated context. When spawning, only pass facts — don't teach method. Agents come with their own execution framework
+- `references/instrumentation-guide.md`: instrumentation templates + environment detection + bisection strategy. Read only when injecting instrumentation
+- `scripts/`: `launch-debugger.js` (start log server), `cleanup-debug-blocks.js` (remove instrumentation code)
+- All paths resolved relative to `<skill base directory>`
+
+## Session ID
+
+Generate immediately when skill triggers: `debug_YYYYMMDD-HHmmss-xxxx`. No script dependency. All instrumentation and log files in this round share this ID.
 
 ---
 
 # Debug Fixer
 
-只给一次猜测机会。猜错了，就用运行时证据说话。自己找不到，就请别人看。
-
-skill 触发时立即生成 session ID：`debug_YYYYMMDD-HHmmss-xxxx`，不依赖脚本。本轮所有埋点、日志文件共用这个 ID。
+You get one guess. If it's wrong, let runtime evidence do the talking. If you can't find it yourself, let someone else look.
 
 ---
 
-## 第一步：扫描代码，定位候选源头
+## Step 1: Scan Code, Identify Candidate Sources
 
-派 `agents/multi-dimension-scan` 做四维扫描（数据流、控制流、视觉、契约），返回交叉节点和 1-3 个候选源头。
+Spawn `agents/multi-dimension-scan`. Pass only the bug symptoms and any existing evidence. The agent performs a four-dimension scan:
 
----
+- **Data flow**: the full lifecycle of data from origin to consumption, all write points
+- **Control flow**: execution order, condition branches, race windows, side-effect chains
+- **Visual**: the intersection of DOM + CSS + JS dynamic styles. Client-side bugs often originate in CSS, not JS — browser layout behavior (flexbox centering, auto sizing, viewBox scaling) can override JS calculations
+- **Contract**: whether inter-module data agreements are violated
 
-## 第二步：修一次
-
-你只有一次静态修复机会。因为静态推理能确定的根因最多只有一个——如果那个不对，说明你需要运行时数据，继续猜只会越修越坏。
-
-### 直接修（快速通道）
-
-明显 typo、漏 null 检查、漏 import、条件写反——这类"看一眼就知道"的问题不需要走门禁，直接改。
-
-### 门禁修（4 条满足 3 条）
-
-1. 修改范围小（1-2 个文件，几十行）
-2. 能解释从源头到症状的完整传播路径
-3. 不涉及异步/竞态/缓存
-4. 扫描确认是单维单点，不是跨维度交叉
-
-### 不适合修就直接埋点
-
-异步/竞态/缓存/多入口状态/跨维度交叉——这些问题的根因不可能靠静态推理确定。直接进入第三步。
-
-### 修失败了
-
-用户的反馈只要不是"修好了"，立即停止一切代码修改——不管你觉得下一个方案多合理。如果此刻你在想"再试一个方案应该能行"，这就是在猜。
-
-**回退你刚才的修改。** 不要用 git（git reset 会毁掉其他对话的未提交代码）。用 Edit 工具把你改过的文件手动改回去，或者如果修改前有原始内容，直接写回。你的修改范围很小（1-2 个文件、几十行），手动回退很简单。
-
-进入第三步。
+Agent returns cross-cutting nodes, 1-3 candidate sources, and a recommended next step.
 
 ---
 
-## 第三步：埋点，收运行时证据
+## Step 2: Fix Once
 
-**不能用 console.log / print / echo。** 这些日志混在业务输出里，无法按 session 聚合，事后也不能批量清理。标准模板用统一 JSON 格式写入专用文件，清理脚本一键移除。
+You get exactly one static fix attempt. Static reasoning can identify at most one root cause — if that's wrong, you need runtime data.
 
-读取 `references/instrumentation-guide.md`，逐字套用模板。只替换 `{{占位符}}`，不改结构。模板中的 `{{DEBUG_SESSION_ID}}` 替换为 skill 触发时生成的 session ID。按调用链二分法选位置：首轮最多 3 处，追加每轮最多 2 处，总共最多 3 轮。客户端先检查 `http://localhost:9220/health`，不通则自动启动日志服务。
+### Fast Track
 
-每轮埋点必须回答四个问题：收到了什么、返回了什么、走了哪个分支、对外产生了什么影响。
+Obvious typos, missing null checks, missing imports, inverted conditions — fix directly.
 
-注入后清空日志文件 `echo "" > .debug/logs/{session_id}.log`，告知用户复现。连续两轮未捕获偏差，或三轮耗尽仍无法定位——派 senior-review。
+### Gated Fix (3 of 4 required)
 
----
+| # | Condition |
+|---|-----------|
+| 1 | Small scope (1-2 files, tens of lines) |
+| 2 | Can explain complete propagation path from source to symptom |
+| 3 | Does not involve async/race conditions/caching |
+| 4 | Scan confirms single-dimension, single-point (not cross-dimensional) |
 
-## 第四步：根据证据修复
+### Skip to Instrumentation
 
-有运行时证据指向首次偏离点后，在源头做最小改动。运行 typecheck 和 lint。
+Async, race conditions, caching, multi-entry state, cross-dimensional — proceed directly to Step 3.
 
-然后进入确认回合——简短告诉用户修了什么、验证结果，请用户确认。用户回复理解：
-- "修好了" → 进入清理
-- "还是不行" → 回退修改（手动，不用 git），回第三步
-- "方向不对" → 派 senior-review
+### Fix Failed
 
----
-
-## 卡住了：派 senior-review agent
-
-不用数回合数，不用对着条件清单逐条核对。当你感觉自己在绕圈子——同一个假设被否定了好几次、用户开始不耐烦、埋点数据和你预想的矛盾——就停下来，总结你试了什么、假设是什么、用户怎么反馈的，派给 `agents/senior-review`。
-
-这个 agent 有独立上下文，会从零重新扫代码，以师傅口吻指出你漏了什么。收到报告后：回退失败修改（手动，不用 git），埋点用脚本清理，按 agent 建议执行。
-
-**可以多次触发。** 如果第一次审查后你按建议修了还是不行，再派一次——带上新的失败信息。agent 每次都是独立上下文，不会被之前的思维惯性影响。
+- Stop all code changes immediately. If you're thinking "one more attempt should work," you're guessing
+- Revert your changes manually (use Edit tool, not git — git reset destroys uncommitted changes from other conversations)
+- Proceed to Step 3
 
 ---
 
-## 修好之后
+## Step 3: Instrument, Collect Runtime Evidence
 
-用户确认修好后，自动执行，不需要再问：
+**No console.log / print / echo.** They mix into application output, can't be cleaned up, and can't be aggregated by session. Standard templates write unified JSON to dedicated files; the cleanup script removes them in one pass.
 
-1. 有埋点则清理：
+### Injection Flow
+
+1. Read `references/instrumentation-guide.md`, determine environment, select template
+2. Apply template verbatim. Only replace `{{placeholders}}`. Replace `{{DEBUG_SESSION_ID}}` with the session ID generated at skill start
+3. Select positions via call-chain bisection: ≤3 in first round, ≤2 per additional round, ≤3 rounds total
+4. For client-side, check `http://localhost:9220/health` first; if down, start log service
+5. Clear log: `echo "" > .debug/logs/{session_id}.log`
+6. Tell user to reproduce
+
+### Each Round Must Answer
+
+- What was received? (input snapshot)
+- What was returned? (output snapshot)
+- Which branch was taken? (condition snapshot)
+- What side effects occurred? (state/effect changes)
+
+### Visual Instrumentation
+
+Don't blindly copy the template's fixed property list. Decide which CSS properties and DOM dimensions to observe based on the bug's rendering chain. **Log both calculated values and actual DOM values — the difference IS the clue.**
+
+- Two consecutive rounds with no deviation captured → spawn senior-review
+- Three rounds exhausted without locating the source → spawn senior-review
+
+---
+
+## Step 4: Fix Based on Evidence
+
+- Once runtime evidence points to the first deviation point, make a minimal fix at the source
+- Run typecheck and lint
+- Enter confirmation round: briefly tell user what you changed, how you verified, and ask for confirmation
+
+### Interpreting User Feedback
+
+Users only say "fixed" or "still broken." They won't analyze for you.
+
+- **"Fixed"** → proceed to cleanup
+- **"Still broken"** → assess yourself:
+  - Have a new direction that needs instrumentation to verify? → go back to Step 3 and **inject new instrumentation**. Old instrumentation only validated the old hypothesis; a new direction needs new data
+  - Circling on the same idea? → spawn senior-review
+  - Logic looks correct but bug persists? → the issue is likely in CSS. Check whether browser layout behavior is overriding JS calculations
+
+---
+
+## Spawn Senior-Review Agent
+
+When you've been debugging the same bug for a while without progress, your thinking narrows — you keep re-examining the same files and the same hypotheses. The senior-review agent solves this: it has clean context, no memory of your failed attempts, and can spot what you've been blind to. Spawning it isn't admitting failure — it's using the right tool for the situation.
+
+Here are signs that escalation will help more than another round of debugging alone:
+
+- **You've run multiple instrumentation rounds and the fix still doesn't work.** The runtime data says the logic is correct, but the bug persists — the real problem is likely somewhere you haven't looked yet.
+- **You're going down the same path repeatedly.** Same function, same file, same type of fix, different parameters — you're in a tunnel. The agent sees the landscape.
+- **Instrumentation logs show no logic errors, yet the bug remains.** This is a strong signal that the root cause is in a dimension you haven't instrumented — likely CSS, a side effect, or a module contract violation.
+- **The user has said "still broken" several times** and each of your fixes was a different guess. You're sampling, not diagnosing.
+
+None of these require counting rounds. If you notice any of these patterns, pause and escalate — you'll save time.
+
+Before spawning: manually revert failed changes, summarize what you tried, your hypotheses, user feedback, and log conclusions. Agent only analyzes, does not modify code. You execute after receiving recommendations.
+
+**Can be triggered multiple times.** If the bug persists after the first review, spawn again — include the new failure information. Each agent instance has independent context, unaffected by previous inertia.
+
+---
+
+## After Fix
+
+Once user confirms the fix, execute automatically:
+
+1. If instrumentation was used, clean up (script filters by session ID, removing only current session's `#region DEBUG` blocks):
    ```bash
-   node <skill base directory>/scripts/cleanup-debug-blocks.js --session-id {id} --files {文件列表} --log-file .debug/logs/{id}.log
+   node <skill base directory>/scripts/cleanup-debug-blocks.js --session-id {id} --files {file list} --log-file .debug/logs/{id}.log
    ```
-2. 一句话告知清理结果
-
----
-
-## 工具脚本
-
-```bash
-curl http://localhost:9220/health     # 检查日志服务
-node <skill base directory>/scripts/launch-debugger.js     # 启动日志服务
-node <skill base directory>/scripts/cleanup-debug-blocks.js --session-id {id} --files {文件列表} --log-file .debug/logs/{id}.log  # 清理埋点
-```
+2. One sentence to inform user of cleanup result
